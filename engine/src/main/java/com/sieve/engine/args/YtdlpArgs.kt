@@ -46,7 +46,7 @@ object YtdlpArgs {
             val actual = canonicalFlag(flag)
             when (value) {
                 is ToggleValue.On -> if (opts.extraArgs?.contains(actual) != true) args += actual
-                is ToggleValue.Text -> { args += actual; args += value.value }
+                is ToggleValue.Text -> if (value.value.isNotEmpty()) { args += actual; args += value.value }
                 ToggleValue.Off -> { /* ignore */ }
             }
         }

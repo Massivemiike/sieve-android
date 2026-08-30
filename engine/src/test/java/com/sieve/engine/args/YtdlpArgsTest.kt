@@ -92,4 +92,12 @@ class YtdlpArgsTest {
         assertFalse(YtdlpArgs.build(DownloadArgsOptions(format = "best", speedLimit = ""), s).contains("--limit-rate"))
         assertTrue(YtdlpArgs.build(DownloadArgsOptions(format = "best", speedLimit = "2M"), s).contains("--limit-rate"))
     }
+
+    @Test fun emptyTextToggleEmitsNothing() {
+        val out = YtdlpArgs.build(
+            DownloadArgsOptions(format = "best", toggleOpts = linkedMapOf("--sub-langs" to ToggleValue.Text(""))),
+            s,
+        )
+        assertFalse(out.contains("--sub-langs"))
+    }
 }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 private class FakeGithub(private val tag: String? = null) : GithubReleaseApi {
@@ -18,6 +19,7 @@ private class FakeClient(
     private val execResults: ArrayDeque<Result<ExecResult>> = ArrayDeque(),
     private val execLines: List<String> = emptyList(),
     private val updateStatus: String = "DONE",
+    private val onExecute: (() -> Unit)? = null,
 ) : YoutubeDLClient {
     override fun version(): String? = ver
     override fun execute(
@@ -27,6 +29,7 @@ private class FakeClient(
         onProgress: (Float, Long, String) -> Unit,
     ): ExecResult {
         execLines.forEach { onProgress(0f, 0L, it) }
+        onExecute?.invoke()
         val r = if (execResults.isNotEmpty()) execResults.removeFirst() else Result.success(ExecResult(0, "", ""))
         return r.getOrThrow()
     }
@@ -40,26 +43,40 @@ class YtDlpEngineImplAnalyzeTest {
 
     @Test fun cookieStoryboardFallbackFlagsResult() = runTest {
         val client = FakeClient(
-            execResults = ArrayDeque(
-                listOf(Result.success(ExecResult(0, storyboardJson, "")), Result.success(ExecResult(0, realJson, ""))),
-            ),
+            execResults = ArrayDeque(listOf(ok(storyboardJson), ok(realJson))),
         )
-        val engine = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined)
-        val r = engine.analyze("u", cookiesBrowser = "chrome")
+        val r = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined).analyze("u", "chrome")
         assertTrue(r is AnalyzeOutcome.Success)
         assertTrue((r as AnalyzeOutcome.Success).info.cookieFallback)
     }
 
-    @Test fun originalErrorWhenFallbackAlsoFails() = runTest {
+    @Test fun originalErrorWhenBothThrow() = runTest {
         val client = FakeClient(
-            execResults = ArrayDeque(
-                listOf(Result.failure(RuntimeException("ERROR: A")), Result.failure(RuntimeException("ERROR: B"))),
-            ),
+            execResults = ArrayDeque(listOf(err("ERROR: A"), err("ERROR: B"))),
         )
-        val engine = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined)
-        val r = engine.analyze("u", cookiesBrowser = "chrome")
+        val r = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined).analyze("u", "chrome")
         assertEquals("ERROR: A", (r as AnalyzeOutcome.Failure).message)
     }
+
+    // C2: without cookies, a storyboard-only result is returned as SUCCESS (desktop never
+    // re-checks storyboards when no cookies were used).
+    @Test fun noCookiesStoryboardIsSuccess() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(storyboardJson))))
+        val r = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined).analyze("u", null)
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertFalse((r as AnalyzeOutcome.Success).info.cookieFallback)
+    }
+
+    // C2: cookies + storyboard-only + fallback also fails → keep the ORIGINAL as success.
+    @Test fun storyboardWithFailedFallbackKeepsOriginal() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(storyboardJson), err("ERROR: nope"))))
+        val r = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined).analyze("u", "chrome")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertFalse((r as AnalyzeOutcome.Success).info.cookieFallback)
+    }
+
+    private fun ok(out: String) = Result.success(ExecResult(0, out, ""))
+    private fun err(msg: String) = Result.failure<ExecResult>(RuntimeException(msg))
 }
 
 class YtDlpEngineImplUpdateTest {
@@ -83,10 +100,23 @@ class YtDlpEngineImplDownloadTest {
             execLines = listOf("[download]  50.0% of 10.00MiB at 1.00MiB/s ETA 00:05", "[download] done"),
             execResults = ArrayDeque(listOf(Result.success(ExecResult(0, "", "")))),
         )
-        val engine = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined)
-        val events = engine.download("id1", "u", listOf("-f", "best")).toList()
+        val events = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined)
+            .download("id1", "u", listOf("-f", "best")).toList()
         assertTrue(events.any { it is EngineEvent.Progress })
         val last = events.last()
         assertTrue(last is EngineEvent.Completed && last.exitCode == 0)
+    }
+
+    // C1: a download killed by cancel(id) emits Cancelled, not Completed/error.
+    @Test fun cancelledDownloadEmitsCancelled() = runTest {
+        lateinit var engine: YtDlpEngineImpl
+        val client = FakeClient(
+            execResults = ArrayDeque(listOf(Result.failure<ExecResult>(RuntimeException("Command was canceled")))),
+            onExecute = { engine.cancel("id1") },
+        )
+        engine = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined)
+        val events = engine.download("id1", "u", listOf("-f", "best")).toList()
+        assertTrue(events.any { it is EngineEvent.Cancelled })
+        assertFalse(events.any { it is EngineEvent.Completed })
     }
 }

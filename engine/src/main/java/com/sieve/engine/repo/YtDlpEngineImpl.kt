@@ -1,6 +1,8 @@
 package com.sieve.engine.repo
 
+import com.sieve.engine.model.VideoInfo
 import com.sieve.engine.parse.AnalyzeError
+import com.sieve.engine.parse.AnalyzeException
 import com.sieve.engine.parse.AnalyzeParser
 import com.sieve.engine.parse.ProgressParser
 import com.sieve.engine.parse.StoryboardDetector
@@ -12,11 +14,15 @@ import com.sieve.engine.update.VersionCompare
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 class YtDlpEngineImpl(
     private val client: YoutubeDLClient,
@@ -26,42 +32,52 @@ class YtDlpEngineImpl(
 ) : YtDlpEngine {
 
     private val gate = Semaphore(analyzeConcurrency)
+    private val cancelledIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** One analyze attempt; throws on non-zero exit or unparseable output (mirrors runAnalyze). */
+    private fun runAnalyze(url: String, cookiesBrowser: String?): VideoInfo {
+        val opts = buildList {
+            add("-J"); add("--no-warnings")
+            if (!cookiesBrowser.isNullOrBlank()) { add("--cookies-from-browser"); add(cookiesBrowser) }
+        }
+        val res = client.execute("analyze", url, opts) { _, _, _ -> }
+        if (res.exitCode != 0) throw AnalyzeException(AnalyzeError.extract(res.err, res.exitCode))
+        return AnalyzeParser.parse(res.out)
+    }
 
     override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = withContext(io) {
         gate.withPermit {
             val hadCookies = !cookiesBrowser.isNullOrBlank()
-            val firstOpts = buildList {
-                add("-J"); add("--no-warnings")
-                if (hadCookies) { add("--cookies-from-browser"); add(cookiesBrowser!!) }
-            }
-            val r1 = runCatching { client.execute("analyze", url, firstOpts) { _, _, _ -> } }
-            val info1 = r1.getOrNull()?.let { runCatching { AnalyzeParser.parse(it.out) }.getOrNull() }
-            if (info1 != null && !StoryboardDetector.hasOnlyStoryboards(info1)) {
-                return@withPermit AnalyzeOutcome.Success(info1)
-            }
-            val firstErr = r1.fold(
-                onSuccess = { AnalyzeError.extract(it.err, it.exitCode) },
-                onFailure = { it.message ?: "analyze failed" },
-            )
-            if (!hadCookies) {
-                return@withPermit if (info1 != null) {
-                    AnalyzeOutcome.Failure("Sign-in may be required (only storyboards available)")
-                } else {
-                    AnalyzeOutcome.Failure(firstErr)
+            try {
+                val result = runAnalyze(url, cookiesBrowser)
+                // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
+                if (hadCookies && StoryboardDetector.hasOnlyStoryboards(result)) {
+                    val fallback = runCatching { runAnalyze(url, null) }.getOrNull()
+                    if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback)) {
+                        return@withPermit AnalyzeOutcome.Success(fallback.copy(cookieFallback = true))
+                    }
+                    // else keep the original result
                 }
-            }
-            // Retry without cookies.
-            val r2 = runCatching { client.execute("analyze", url, listOf("-J", "--no-warnings")) { _, _, _ -> } }
-            val info2 = r2.getOrNull()?.let { runCatching { AnalyzeParser.parse(it.out) }.getOrNull() }
-            if (info2 != null && !StoryboardDetector.hasOnlyStoryboards(info2)) {
-                AnalyzeOutcome.Success(info2.copy(cookieFallback = true))
-            } else {
-                AnalyzeOutcome.Failure(firstErr)
+                AnalyzeOutcome.Success(result)
+            } catch (err: Exception) {
+                if (hadCookies) {
+                    // The cookie attempt failed outright — retry without, returned unconditionally.
+                    val fallback = runCatching { runAnalyze(url, null) }.getOrNull()
+                    if (fallback != null) {
+                        AnalyzeOutcome.Success(fallback.copy(cookieFallback = true))
+                    } else {
+                        AnalyzeOutcome.Failure(err.message ?: "analyze failed") // original error
+                    }
+                } else {
+                    AnalyzeOutcome.Failure(err.message ?: "analyze failed")
+                }
             }
         }
     }
 
     override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = channelFlow {
+        cancelledIds.remove(id)
+        ensureOutputDir(args)
         withContext(io) {
             try {
                 val result = client.execute(id, url, args) { _, _, line ->
@@ -80,15 +96,22 @@ class YtDlpEngineImpl(
                 send(EngineEvent.Cancelled)
                 throw e
             } catch (e: Exception) {
-                // The library collapses a non-zero exit into an exception; surface the
-                // message as an ERROR log and a Completed(1) so the queue's ErrorMapper runs.
-                send(EngineEvent.Log(e.message ?: "download failed", null, true))
-                send(EngineEvent.Completed(1))
+                // cancel(id) → destroy(id) kills the process and the library throws; route
+                // that as a user Cancel, not an error.
+                if (cancelledIds.remove(id)) {
+                    send(EngineEvent.Cancelled)
+                } else {
+                    send(EngineEvent.Log(e.message ?: "download failed", null, true))
+                    send(EngineEvent.Completed(1))
+                }
             }
         }
-    }
+    }.buffer(Channel.UNLIMITED) // never drop a progress frame (incl. the terminal 100%)
 
-    override fun cancel(id: String): Boolean = runCatching { client.destroy(id) }.getOrDefault(false)
+    override fun cancel(id: String): Boolean {
+        cancelledIds.add(id)
+        return runCatching { client.destroy(id) }.getOrDefault(false)
+    }
 
     override suspend fun version(): String? = withContext(io) { runCatching { client.version() }.getOrNull() }
 
@@ -104,5 +127,14 @@ class YtDlpEngineImpl(
                 onSuccess = { UpdateResult(true, it) },
                 onFailure = { UpdateResult(false, it.message ?: "update failed") },
             )
+    }
+
+    /** Desktop/CLAUDE.md invariant: the output dir must exist before yt-dlp runs. */
+    private fun ensureOutputDir(args: List<String>) {
+        val i = args.indexOf("-P")
+        if (i >= 0 && i + 1 < args.size) {
+            val path = args[i + 1]
+            if (!path.startsWith("content://")) runCatching { File(path).mkdirs() }
+        }
     }
 }
