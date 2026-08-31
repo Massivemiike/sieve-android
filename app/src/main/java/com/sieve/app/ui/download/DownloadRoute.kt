@@ -59,6 +59,13 @@ fun DownloadRoute(
     vm: DownloadViewModel = viewModel(factory = viewModelFactory { initializer { DownloadViewModel.from() } }),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val sharedUrl by com.sieve.app.ui.common.SharedUrlBus.url.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(sharedUrl) {
+        sharedUrl?.let {
+            vm.onUrlChange(it)
+            com.sieve.app.ui.common.SharedUrlBus.consume()
+        }
+    }
     DownloadScreen(
         state = state,
         onUrlChange = vm::onUrlChange,
