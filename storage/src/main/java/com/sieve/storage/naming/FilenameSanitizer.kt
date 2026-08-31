@@ -18,10 +18,13 @@ object FilenameSanitizer {
                 append(if (ch in ILLEGAL || ch.code < 0x20 || ch.code == 0x7F) '_' else ch)
             }
         }.replace(COLLAPSE, "_")
-        // 2. Split stem/ext on the LAST dot (ext must be non-empty and reasonable).
+        // 2. Split stem/ext on the LAST dot — but ONLY if the trailing ".xyz" looks like a real
+        //    extension (alnum, <=8). Otherwise a leading-dot name like "..x" would lose a dot.
         val dot = cleaned.lastIndexOf('.')
-        var stem = if (dot > 0) cleaned.substring(0, dot) else cleaned
-        var ext = if (dot > 0) cleaned.substring(dot) else ""
+        val extCandidate = if (dot > 0) cleaned.substring(dot) else ""
+        val hasExt = extCandidate.length in 2..9 && extCandidate.drop(1).all { it.isLetterOrDigit() }
+        var stem = if (hasExt) cleaned.substring(0, dot) else cleaned
+        var ext = if (hasExt) extCandidate else ""
 
         // 3. Trim trailing dots/spaces on the stem (FAT rejects these).
         stem = stem.trimEnd('.', ' ')
