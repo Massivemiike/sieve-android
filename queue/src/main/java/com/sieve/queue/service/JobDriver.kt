@@ -63,7 +63,7 @@ class JobDriver(
     private fun driveTranscode(job: QueueJob, spec: JobSpec.Transcode, reason: () -> CancelReason?): Flow<JobSignal> = flow {
         var terminated = false
         // outputPath is filled by the QueueManager before spawn; the driver receives the prepared job.
-        val tj = TranscodeJob(spec.inputPath, "", spec.presetArgs, spec.totalDurationSec, spec.usedHardwareEncoder)
+        val tj = TranscodeJob(spec.inputPath, spec.outputPath, spec.presetArgs, spec.totalDurationSec, spec.usedHardwareEncoder)
         transcodePort.run(job.id, tj).collect { ev ->
             if (terminated) return@collect
             when (ev) {

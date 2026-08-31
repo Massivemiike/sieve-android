@@ -22,12 +22,14 @@ sealed interface JobSpec {
      *  physical output location (-P/-o are injected at spawn from the OutputLocationProvider). */
     data class Download(val url: String, val engineArgs: List<String>) : JobSpec
 
-    /** Drives FfmpegRunner.run(job). outputPath is filled at spawn from the seam. */
+    /** Drives FfmpegRunner.run(job). outputPath is filled at spawn from the seam
+     *  (QueueManager.withOutput sets it from PreparedOutput). */
     data class Transcode(
         val inputPath: String,
         val presetArgs: List<String>,
         val totalDurationSec: Double?,
         val usedHardwareEncoder: Boolean,
+        val outputPath: String = "",
     ) : JobSpec
 }
 

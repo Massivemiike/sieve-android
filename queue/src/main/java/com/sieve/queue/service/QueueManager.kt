@@ -179,7 +179,9 @@ class QueueManager(
         is JobSpec.Download -> job.copy(
             spec = JobSpec.Download(s.url, ArgReconciler.injectDownloadOutput(ArgReconciler.ensureContinue(s.engineArgs), prepared)),
         )
-        is JobSpec.Transcode -> job
+        is JobSpec.Transcode -> job.copy(
+            spec = s.copy(outputPath = "${prepared.workDir}/${prepared.workFileTemplate}"),
+        )
     }
 
     private suspend fun killJob(id: String) {
