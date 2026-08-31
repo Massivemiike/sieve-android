@@ -40,12 +40,19 @@ object ArgFinalizer {
         }
 
         // 2. Burn subtitles — escape backslashes→/, then colons, then quotes; append to -vf or push new.
+        //    A complex filtergraph with labeled links (e.g. gif's `...palettegen[p];[s1][p]paletteuse`)
+        //    cannot take a comma-appended `subtitles=` filter — doing so corrupts the graph — so skip
+        //    the burn there. The `;` is the discriminator: simple comma-chains (scale, pad) have none.
         if (opts.burnSubtitles && !opts.subtitleSource.isNullOrEmpty()) {
-            val escaped = opts.subtitleSource
-                .replace("\\", "/")
-                .replace(":", "\\:")
-                .replace("'", "\\'")
-            appendFilter(args, "-vf", "subtitles='$escaped'")
+            val vfIdx = args.indexOf("-vf")
+            val existingVf = if (vfIdx >= 0 && vfIdx + 1 < args.size) args[vfIdx + 1] else null
+            if (existingVf == null || !existingVf.contains(';')) {
+                val escaped = opts.subtitleSource
+                    .replace("\\", "/")
+                    .replace(":", "\\:")
+                    .replace("'", "\\'")
+                appendFilter(args, "-vf", "subtitles='$escaped'")
+            }
         }
 
         // 3. CRF override — replace the value after -crf, if present (no-op for bitrate/audio/image presets).

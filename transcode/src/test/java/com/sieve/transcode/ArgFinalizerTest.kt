@@ -8,6 +8,7 @@ import com.sieve.transcode.args.FinalizeOptions
 import com.sieve.transcode.args.ThreadCaps
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Task 5: thread caps. Tasks 6–8: the finalize pipeline (subs, CRF, loudnorm, gain, raw). */
@@ -96,6 +97,23 @@ class ArgFinalizerTest {
         val base = FfmpegArgs.build("h264-1080", SOFTWARE)
         val out = ArgFinalizer.finalize(base, opts(emitThreads = false, burnSubtitles = true, subtitleSource = null))
         assertEquals(base, out)
+    }
+
+    @Test fun burnSubs_refusedOnGifComplexFiltergraph() {
+        // gif's -vf is a labeled palettegen/paletteuse graph; appending ,subtitles= would corrupt it.
+        val base = FfmpegArgs.build("gif", SOFTWARE)
+        val out = ArgFinalizer.finalize(base, opts(emitThreads = false, burnSubtitles = true, subtitleSource = "s.srt"))
+        assertEquals("gif -vf must be left untouched", base, out)
+    }
+
+    @Test fun burnSubs_allowedOnCommaChainedPadGraph() {
+        // ig-vert's -vf is a simple comma chain (scale,pad) — subtitles CAN be appended safely.
+        val out = ArgFinalizer.finalize(
+            FfmpegArgs.build("ig-vert", SOFTWARE),
+            opts(emitThreads = false, burnSubtitles = true, subtitleSource = "s.srt"),
+        )
+        val vf = out[out.indexOf("-vf") + 1]
+        assertTrue("subtitles should be appended to the pad chain", vf.endsWith(",subtitles='s.srt'"))
     }
 
     @Test fun crfOverride_replacesValueWhenCrfPresent() {
