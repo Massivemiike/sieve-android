@@ -1,7 +1,10 @@
 name: Release
 
-# Builds a SIGNED release APK on a version tag, emits the update manifest, and attaches both to a
-# GitHub Release (the update mirror). Required repo secrets:
+# On a version tag: build a SIGNED release APK, emit the update manifest, and attach both to a
+# GitHub Release (the update mirror).
+# On manual dispatch: build the SIGNED APK and upload it as a workflow ARTIFACT only (no release) —
+# used to validate a build on a real device before cutting the public tag.
+# Required repo secrets:
 #   SIGNING_KEYSTORE        base64 of the release .jks   (base64 -w0 sieve-release.jks)
 #   SIGNING_STORE_PASSWORD  keystore password
 #   SIGNING_KEY_ALIAS       key alias
@@ -12,6 +15,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -50,15 +54,24 @@ jobs:
       - name: Assemble signed release
         run: ./gradlew :app:assembleRelease --no-daemon
 
+      - name: Stage APK
+        run: cp app/build/outputs/apk/release/app-release.apk Sieve.apk
+
+      # Always available (tag builds and manual dispatch) so a build can be device-tested pre-release.
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sieve-apk
+          path: Sieve.apk
+
       - name: Extract version + generate manifest
+        if: startsWith(github.ref, 'refs/tags/')
         id: manifest
         run: |
           VERSION_NAME="${GITHUB_REF_NAME#v}"
           VERSION_CODE="$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)"
-          APK="app/build/outputs/apk/release/app-release.apk"
           # Stable asset name so releases/latest/download/Sieve.apk always resolves to the newest build.
           APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Sieve.apk"
-          cp "$APK" "Sieve.apk"
           node tools/generate-update-manifest.mjs \
             --apk "Sieve.apk" \
             --versionCode "$VERSION_CODE" \
@@ -67,13 +80,10 @@ jobs:
             --out update-manifest.json
 
       - name: Create GitHub Release (hosts the APK + manifest)
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             Sieve.apk
             update-manifest.json
           fail_on_unmatched_files: true
-
-      # The app self-updates from releases/latest/download/update-manifest.json (always fresh).
-      # The GitHub Pages site (site/index.html) is the public download page. For host resilience you
-      # can later add your own domain's manifest as UpdateRepository.PRIMARY_MANIFEST_URL.

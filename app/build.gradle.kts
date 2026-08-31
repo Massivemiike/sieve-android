@@ -19,8 +19,8 @@ android {
         applicationId = "com.sieve.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
@@ -39,9 +39,16 @@ android {
             // keep all built ABIs (incl. x86_64) so the emulator can run debug + connected tests
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // R8 minification is DISABLED intentionally. Sieve is GPLv3 open source, so
+            // obfuscation gives no IP protection — it only risks breaking the reflection-
+            // based init inside youtubedl-android (its Python bootstrap loads classes by
+            // name). R8 full-mode did exactly that in v1.0.0: the app crashed on launch
+            // with `ExceptionInInitializerError: class ... is not a concrete class` from
+            // YoutubeDL.initPython. Keeping minify off makes the release build behave like
+            // the (fully tested) debug build. Do NOT re-enable without validated keep rules
+            // for youtubedl-android's transitive reflective deps AND an on-device release test.
+            isMinifyEnabled = false
+            isShrinkResources = false
             ndk { abiFilters.add("arm64-v8a") } // release ships arm64 only (smallest APK)
             signingConfig = if (keystorePropsFile.exists()) signingConfigs.getByName("release") else null
         }
