@@ -155,7 +155,7 @@ private fun Wordmark() {
         }
         Text("Sieve", style = MaterialTheme.typography.titleLarge)
         Text(
-            "0.1.0",
+            "v${com.sieve.app.BuildConfig.VERSION_NAME}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
