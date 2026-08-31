@@ -57,7 +57,7 @@ fun SieveChip(text: String, kind: ChipKind = ChipKind.NEUTRAL, leadingDot: Boole
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         if (leadingDot) Box(Modifier.size(6.dp).clip(CircleShape).background(fg))
-        Text(text, color = fg, style = MaterialTheme.typography.labelMedium)
+        Text(text, color = fg, style = MaterialTheme.typography.labelMedium.copy(fontFamily = com.sieve.app.ui.theme.MonoFamily))
     }
 }
 

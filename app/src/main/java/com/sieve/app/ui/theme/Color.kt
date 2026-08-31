@@ -28,6 +28,8 @@ fun sieveDarkColors(accent: Color = SieveAmber): ColorScheme = darkColorScheme(
     onPrimaryContainer = accent,
     secondary = accent,
     onSecondary = SieveInk,
+    secondaryContainer = accent.copy(alpha = 0.22f), // selected bottom-nav pill
+    onSecondaryContainer = accent,
     tertiary = SieveGood,
     onTertiary = SieveInk,
     background = DarkBg0,
@@ -63,6 +65,8 @@ fun sieveLightColors(accent: Color = SieveAmber): ColorScheme = lightColorScheme
     onPrimaryContainer = Color(0xFFB9750F),
     secondary = accent,
     onSecondary = SieveInk,
+    secondaryContainer = accent.copy(alpha = 0.20f),
+    onSecondaryContainer = SieveInk,
     tertiary = Color(0xFF2F8A6B),
     onTertiary = Color(0xFFFFFFFF),
     background = LightBg0,
