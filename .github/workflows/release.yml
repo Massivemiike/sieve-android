@@ -56,22 +56,24 @@ jobs:
           VERSION_NAME="${GITHUB_REF_NAME#v}"
           VERSION_CODE="$(grep -oP 'versionCode\s*=\s*\K[0-9]+' app/build.gradle.kts | head -1)"
           APK="app/build/outputs/apk/release/app-release.apk"
-          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/sieve-${GITHUB_REF_NAME}.apk"
-          cp "$APK" "sieve-${GITHUB_REF_NAME}.apk"
+          # Stable asset name so releases/latest/download/Sieve.apk always resolves to the newest build.
+          APK_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/Sieve.apk"
+          cp "$APK" "Sieve.apk"
           node tools/generate-update-manifest.mjs \
-            --apk "sieve-${GITHUB_REF_NAME}.apk" \
+            --apk "Sieve.apk" \
             --versionCode "$VERSION_CODE" \
             --versionName "$VERSION_NAME" \
             --apkUrl "$APK_URL" \
             --out update-manifest.json
 
-      - name: Create GitHub Release (mirror)
+      - name: Create GitHub Release (hosts the APK + manifest)
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            sieve-${{ github.ref_name }}.apk
+            Sieve.apk
             update-manifest.json
           fail_on_unmatched_files: true
 
-      # NOTE: also upload sieve-<tag>.apk + update-manifest.json to the PRIMARY website,
-      # and host the ffmpeg + yt-dlp corresponding source there (see docs/RELEASE.md).
+      # The app self-updates from releases/latest/download/update-manifest.json (always fresh).
+      # The GitHub Pages site (site/index.html) is the public download page. For host resilience you
+      # can later add your own domain's manifest as UpdateRepository.PRIMARY_MANIFEST_URL.

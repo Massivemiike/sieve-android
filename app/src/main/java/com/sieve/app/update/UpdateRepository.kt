@@ -59,8 +59,10 @@ class UpdateRepository(
     }
 
     companion object {
-        // Owner-editable: the website manifest is primary; the GitHub Releases asset is the mirror.
-        const val PRIMARY_MANIFEST_URL = "https://REPLACE-ME.example/sieve/update-manifest.json"
+        // The GitHub Releases asset is always fresh (latest/download resolves to the newest release).
+        // For host resilience, later point PRIMARY at your own domain's update-manifest.json.
+        const val PRIMARY_MANIFEST_URL =
+            "https://github.com/Massivemiike/sieve-android/releases/latest/download/update-manifest.json"
         const val MIRROR_MANIFEST_URL =
             "https://github.com/Massivemiike/sieve-android/releases/latest/download/update-manifest.json"
 
