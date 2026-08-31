@@ -1,0 +1,16 @@
+package com.sieve.queue.persist
+
+import com.sieve.data.dao.QueueDao
+import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.QueueJob
+import com.sieve.queue.core.QueuePersistence
+
+/** Room-backed [QueuePersistence]. Bridges the domain [QueueJob] to [DownloadTaskEntity] via [TaskMapping]. */
+class RoomQueuePersistence(private val dao: QueueDao) : QueuePersistence {
+    override suspend fun loadAll(): List<QueueJob> = dao.getAll().map(TaskMapping::toDomain)
+    override suspend fun upsert(job: QueueJob) = dao.upsert(TaskMapping.toEntity(job))
+    override suspend fun upsertAll(jobs: List<QueueJob>) = dao.upsertAll(jobs.map(TaskMapping::toEntity))
+    override suspend fun updateStatus(id: String, status: DownloadStatus) = dao.updateStatus(id, status.name)
+    override suspend fun delete(id: String) = dao.deleteById(id)
+    override suspend fun prune(cutoff: Long): Int = dao.prune(cutoff)
+}
