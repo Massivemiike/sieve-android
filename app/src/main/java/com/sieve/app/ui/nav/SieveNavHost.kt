@@ -73,12 +73,14 @@ fun SieveNavHost() {
                                 }
                             },
                         )
-                        else -> EmptyState(icon = d.icon, title = d.label, subtitle = "${d.route}-screen")
+                        Dest.SETTINGS -> com.sieve.app.ui.settings.SettingsRoute(
+                            onOpenAbout = { navController.navigate(ROUTE_ABOUT) },
+                        )
                     }
                 }
             }
             composable(ROUTE_ABOUT) {
-                EmptyState(icon = Icons.Filled.Info, title = "About", subtitle = "about-screen")
+                com.sieve.app.ui.settings.AboutRoute()
             }
         }
     }

@@ -30,7 +30,7 @@ class NavInstrumentedTest {
         rule.onNodeWithText("Choose a folder").assertIsDisplayed() // real Library screen (no tree granted)
 
         rule.onNodeWithTag("nav_settings").performClick()
-        rule.onNodeWithText("settings-screen").assertIsDisplayed()
+        rule.onNodeWithText("STORAGE").assertIsDisplayed() // real Settings screen (first section label)
 
         rule.onNodeWithTag("nav_download").performClick()
         rule.onNodeWithText("Sieve").assertIsDisplayed()
