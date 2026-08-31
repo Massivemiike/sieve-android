@@ -13,6 +13,7 @@ class SubtitleExporterTest {
         override suspend fun delete(uri: String) = true
         override suspend fun readText(uri: String, maxBytes: Int) = srt to false
         override suspend fun openReadFd(uri: String) = -1
+        override suspend fun openWriteFd(uri: String) = -1
         override suspend fun createChild(parentUri: String, mime: String, name: String): LibraryEntry {
             createdName = name
             return LibraryEntry("id", "uri://$name", name, 0, 0, false, "txt")

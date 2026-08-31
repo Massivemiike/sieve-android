@@ -77,9 +77,12 @@ class SafDocumentStore(private val context: Context) : DocumentStore {
         }
     }
 
-    override suspend fun openReadFd(uri: String): Int = withContext(Dispatchers.IO) {
-        val pfd: ParcelFileDescriptor = context.contentResolver.openFileDescriptor(Uri.parse(uri), "r")
-            ?: error("cannot open fd for $uri")
+    override suspend fun openReadFd(uri: String): Int = openFd(uri, "r")
+    override suspend fun openWriteFd(uri: String): Int = openFd(uri, "w")
+
+    private suspend fun openFd(uri: String, mode: String): Int = withContext(Dispatchers.IO) {
+        val pfd: ParcelFileDescriptor = context.contentResolver.openFileDescriptor(Uri.parse(uri), mode)
+            ?: error("cannot open $mode fd for $uri")
         pfd.detachFd()
     }
 

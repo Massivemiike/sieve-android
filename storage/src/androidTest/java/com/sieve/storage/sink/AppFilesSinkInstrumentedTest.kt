@@ -22,5 +22,6 @@ class AppFilesSinkInstrumentedTest {
         assertEquals("V", f.readText())
         assertTrue("a.mp4" in sink.existingNames("Music"))
         f.parentFile?.deleteRecursively()
+        Unit // keep @Test void
     }
 }

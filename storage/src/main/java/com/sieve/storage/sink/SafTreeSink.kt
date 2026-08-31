@@ -42,7 +42,10 @@ class SafTreeSink(
         withContext(io) {
             val dir = resolveDir(dirLabel)
             dir.findFile(name)?.delete() // overwrite: avoid "name (1)"
-            val doc = dir.createFile("application/octet-stream", name) ?: error("createFile failed for $name")
+            val created = dir.createFile("application/octet-stream", name) ?: error("createFile failed for $name")
+            // RawDocumentFile (a file-backed tree) appends the octet-stream extension ("clip.mp4.bin");
+            // rename back to the exact requested name. On a real SAF tree this is a no-op.
+            val doc = if (created.name != name && created.renameTo(name)) (dir.findFile(name) ?: created) else created
             context.contentResolver.openOutputStream(doc.uri, "wt").use { out ->
                 requireNotNull(out) { "null output stream" }
                 bytes.copyTo(out, 64 * 1024)
@@ -55,6 +58,12 @@ class SafTreeSink(
     override suspend fun commit(target: OutputTarget) { /* SAF writes are immediate; no pending state */ }
 
     override suspend fun deletePending(target: OutputTarget) {
-        withContext(io) { runCatching { DocumentFile.fromSingleUri(context, Uri.parse(target.uri))?.delete() } }
+        withContext(io) {
+            val uri = Uri.parse(target.uri)
+            runCatching {
+                if (uri.scheme == "file") java.io.File(requireNotNull(uri.path)).delete()
+                else DocumentFile.fromSingleUri(context, uri)?.delete()
+            }
+        }
     }
 }

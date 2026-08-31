@@ -6,6 +6,7 @@ interface DocumentStore {
     suspend fun rename(uri: String, newName: String): LibraryEntry?
     suspend fun delete(uri: String): Boolean
     suspend fun readText(uri: String, maxBytes: Int = 256 * 1024): Pair<String, Boolean> // text, truncated
-    suspend fun openReadFd(uri: String): Int   // /proc/self/fd for ffmpeg
+    suspend fun openReadFd(uri: String): Int   // /proc/self/fd for ffmpeg input
+    suspend fun openWriteFd(uri: String): Int  // /proc/self/fd for ffmpeg output
     suspend fun createChild(parentUri: String, mime: String, name: String): LibraryEntry?
 }

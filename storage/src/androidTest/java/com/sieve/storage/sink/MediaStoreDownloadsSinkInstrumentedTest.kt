@@ -22,5 +22,6 @@ class MediaStoreDownloadsSinkInstrumentedTest {
         val bytes = ctx.contentResolver.openInputStream(android.net.Uri.parse(t.uri))!!.use { it.readBytes() }
         assertTrue(bytes.toString(Charsets.UTF_8) == "DATA")
         ctx.contentResolver.delete(android.net.Uri.parse(t.uri), null, null)
+        Unit // keep @Test void
     }
 }
