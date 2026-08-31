@@ -16,7 +16,9 @@ import com.sieve.queue.core.QueueState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,9 +60,13 @@ class QueueManager(
         val before = _state.value
         val after = QueueReducer.reduce(before, event)
         _state.value = after
-        val changed = after.jobs.filter { j -> before.job(j.id) != j }
-        if (changed.isNotEmpty()) persistence.upsertAll(changed)
-        (before.jobs.map { it.id } - after.jobs.map { it.id }.toSet()).forEach { persistence.delete(it) }
+        // Persist in NonCancellable so a scope teardown (Service onDestroy) can't interrupt a Room
+        // transaction mid-write ("no current transaction"); the state is already updated in memory.
+        withContext(NonCancellable) {
+            val changed = after.jobs.filter { j -> before.job(j.id) != j }
+            if (changed.isNotEmpty()) persistence.upsertAll(changed)
+            (before.jobs.map { it.id } - after.jobs.map { it.id }.toSet()).forEach { persistence.delete(it) }
+        }
     }
 
     suspend fun enqueue(job: QueueJob) { dispatch(QueueEvent.Enqueue(job)); drain() }
