@@ -11,8 +11,15 @@ captures/
 .sdd-progress.md
 wsl-verify.sh
 
-# Built ffmpeg binaries (produced by transcode/build-ffmpeg/ffbuild.sh, not committed)
-transcode/src/main/jniLibs/
+# Built ffmpeg binaries (produced by transcode/build-ffmpeg/ffbuild.sh).
+# The release APK ships arm64-v8a only, so THAT binary is committed — the CI
+# release build (GitHub Actions) has no other way to obtain it. The x86_64
+# binary is emulator/debug-only and stays ignored. Corresponding source for
+# the committed binary lives in transcode/build-ffmpeg/ + licenses/.
+transcode/src/main/jniLibs/*
+!transcode/src/main/jniLibs/arm64-v8a
+transcode/src/main/jniLibs/arm64-v8a/*
+!transcode/src/main/jniLibs/arm64-v8a/libffmpeg.so
 
 # Release signing — never commit the keystore or its passwords
 app/keystore.properties
