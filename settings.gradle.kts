@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 rootProject.name = "sieve-android"
 include(":engine")
 include(":transcode")
+include(":data")
+include(":queue")
