@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Key Supporters — Sieve for Android</title>
+<meta name="description" content="The people whose generosity keeps Sieve free, open, and ad-free. Donate more than $25 to earn a permanent place here.">
+<meta name="theme-color" content="#08090b">
+<meta property="og:title" content="Key Supporters — Sieve for Android">
+<meta property="og:description" content="The people who keep Sieve free, open, and ad-free.">
+<meta property="og:url" content="https://massivemiike.github.io/sieve-android/supporters.html">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  --bg-0:#08090b; --bg-1:#0d0e11; --bg-2:#14161a; --bg-3:#1b1e23; --bg-4:#24272d;
+  --line:#23262c; --line-soft:#181a1f;
+  --fg-0:#f3f4f7; --fg-1:#cdd0d6; --fg-2:#9aa0aa; --fg-3:#6b7079; --fg-4:#4a4e57;
+  --accent:#e0a458; --accent-soft:rgba(224,164,88,0.14); --accent-line:rgba(224,164,88,0.32);
+  --good:#4ec9a8; --good-soft:rgba(78,201,168,0.12); --good-line:rgba(78,201,168,0.30);
+  --font-sans:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,'Cascadia Code',monospace;
+  --radius:10px; --radius-lg:14px; --radius-xl:22px;
+  --shadow:0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 24px rgba(0,0,0,0.35);
+  --maxw:1120px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{
+  background:var(--bg-0);color:var(--fg-0);font-family:var(--font-sans);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;min-height:100vh;overflow-x:hidden;
+  background-image:
+    radial-gradient(58% 40% at 50% -4%, rgba(224,164,88,0.13), transparent 68%),
+    radial-gradient(42% 34% at 88% 30%, rgba(78,201,168,0.05), transparent 70%);
+  background-attachment:fixed;
+}
+svg{display:block}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.icon{width:24px;height:24px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
+.icon.sm{width:18px;height:18px;stroke-width:1.8}
+a:focus-visible,button:focus-visible,.btn:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:6px}
+:focus:not(:focus-visible){outline:none}
+.skip{position:absolute;left:-9999px;top:8px;z-index:100;background:var(--accent);color:#20160a;font-weight:600;padding:10px 16px;border-radius:8px}
+.skip:focus{left:12px}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+.eyebrow{font-family:var(--font-mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);display:inline-flex;align-items:center;gap:10px}
+.eyebrow::before{content:"";width:22px;height:1px;background:var(--accent);opacity:.75}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;font-weight:600;font-size:15px;line-height:1;border-radius:12px;cursor:pointer;border:1px solid transparent;padding:0 20px;height:48px;transition:transform .12s ease,box-shadow .18s ease,background .18s ease,border-color .18s ease;text-decoration:none}
+.btn:hover{text-decoration:none}
+.btn-primary{background:var(--accent);color:#20160a;box-shadow:0 8px 22px -8px rgba(224,164,88,.62)}
+.btn-primary:hover{box-shadow:0 0 0 3px rgba(224,164,88,.22),0 10px 26px -8px rgba(224,164,88,.7);transform:translateY(-1px)}
+.btn-primary .icon{stroke:#20160a;stroke-width:2.2}
+.btn-ghost{background:var(--bg-2);color:var(--fg-1);border-color:var(--line)}
+.btn-ghost:hover{background:var(--bg-3);color:var(--fg-0);border-color:var(--bg-4);transform:translateY(-1px)}
+.btn-lg{height:56px;font-size:16px;padding:0 26px;border-radius:14px}
+
+.site-header{position:sticky;top:0;z-index:50;background:rgba(8,9,11,0.78);backdrop-filter:saturate(140%) blur(12px);-webkit-backdrop-filter:saturate(140%) blur(12px);border-bottom:1px solid var(--line-soft)}
+.site-header .bar{display:flex;align-items:center;gap:16px;height:64px}
+.brand{display:flex;align-items:center;gap:11px;color:var(--fg-0);text-decoration:none;font-weight:700}
+.brand:hover{text-decoration:none}
+.logo{width:36px;height:36px;border-radius:10px;flex:0 0 auto;background:linear-gradient(150deg,#eab86a,#d1913f);display:grid;place-items:center;color:#20160a;box-shadow:0 2px 10px rgba(224,164,88,.34),inset 0 1px 0 rgba(255,255,255,.35)}
+.logo .icon{width:22px;height:22px;stroke:#20160a;stroke-width:2.4}
+.brand .wm{font-size:18px;letter-spacing:-.01em}
+.brand .ver{font-family:var(--font-mono);font-size:10px;color:var(--fg-3);border:1px solid var(--line);border-radius:6px;padding:2px 6px;margin-left:2px}
+.site-header .spacer{flex:1}
+.header-dl{height:40px;font-size:14px;padding:0 16px;border-radius:10px}
+
+.page-hero{padding:72px 0 20px;text-align:center}
+.page-hero .logo{width:60px;height:60px;border-radius:16px;margin:0 auto 22px}
+.page-hero .logo .icon{width:34px;height:34px}
+.page-hero h1{font-size:clamp(32px,4.6vw,50px);font-weight:700;letter-spacing:-.03em;line-height:1.05;margin:16px 0 16px;text-wrap:balance}
+.page-hero h1 .amber{color:var(--accent)}
+.page-hero .lede{color:var(--fg-1);font-size:18px;line-height:1.6;max-width:60ch;margin:0 auto}
+.page-hero .lede b{color:var(--fg-0);font-weight:600}
+
+section{padding:44px 0}
+
+/* Supporters list */
+.supporters-wrap{max-width:860px;margin:0 auto}
+.supporter-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.supporter{
+  background:var(--bg-1);border:1px solid var(--line);border-radius:var(--radius-lg);
+  padding:18px 20px;display:flex;align-items:center;gap:13px;
+}
+.supporter .s-star{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:0 0 auto;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line)}
+.supporter .s-star .icon{width:18px;height:18px}
+.supporter .s-name{font-size:15.5px;font-weight:600;color:var(--fg-0)}
+.supporter .s-note{display:block;font-size:12.5px;color:var(--fg-3);margin-top:2px}
+
+/* Empty state */
+.empty-state{
+  max-width:620px;margin:0 auto;text-align:center;
+  background:var(--bg-1);border:1px solid var(--accent-line);border-radius:var(--radius-xl);
+  padding:44px 34px;box-shadow:var(--shadow),0 0 0 4px rgba(224,164,88,.05);
+}
+.empty-state .es-icon{width:56px;height:56px;border-radius:15px;margin:0 auto 20px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);border:1px solid var(--accent-line)}
+.empty-state .es-icon .icon{width:28px;height:28px}
+.empty-state h2{font-size:24px;font-weight:700;letter-spacing:-.02em;margin-bottom:12px}
+.empty-state p{color:var(--fg-2);font-size:16px;line-height:1.6;max-width:46ch;margin:0 auto 26px}
+.empty-state p b{color:var(--fg-1);font-weight:600}
+
+.back-link{display:inline-flex;align-items:center;gap:8px;color:var(--fg-2);font-size:14px;margin-top:36px}
+.back-link:hover{color:var(--fg-0);text-decoration:none}
+
+.site-footer{border-top:1px solid var(--line-soft);padding:40px 0 52px;margin-top:32px}
+.footer-bottom{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;font-size:13px;color:var(--fg-3)}
+.footer-bottom .fmono{font-family:var(--font-mono);font-size:12px}
+.footer-bottom .fmono .amber{color:var(--accent)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></symbol>
+<symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 6.6a5 5 0 00-8.8-2.1 5 5 0 00-8.8 2.1c-.6 2.4.8 4.8 2.7 6.6L12 20l6.1-6.8c1.9-1.8 3.3-4.2 2.7-6.6z"/></symbol>
+<symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6-5.4-3-5.4 3 1.2-6L3.3 9.4l6.1-.8z"/></symbol>
+<symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+</defs></svg>
+
+<header class="site-header">
+  <div class="wrap bar">
+    <a class="brand" href="index.html" aria-label="Sieve for Android — home">
+      <span class="logo" aria-hidden="true"><svg class="icon"><use href="#i-download"/></svg></span>
+      <span class="wm">Sieve</span>
+      <span class="ver">Android</span>
+    </a>
+    <span class="spacer"></span>
+    <a class="btn btn-primary header-dl" href="https://github.com/Massivemiike/sieve-android/releases/latest/download/Sieve.apk">
+      <svg class="icon sm" aria-hidden="true"><use href="#i-download"/></svg> Download
+    </a>
+  </div>
+</header>
+
+<main id="main">
+  <section class="page-hero">
+    <div class="wrap">
+      <span class="logo" aria-hidden="true"><svg class="icon"><use href="#i-star"/></svg></span>
+      <span class="eyebrow">Thank you</span>
+      <h1>Key <span class="amber">Supporters</span></h1>
+      <p class="lede">
+        These are the people whose generosity keeps Sieve <b>free, open, and ad-free</b> for everyone.
+        Donate more than <b>$25</b> and you'll earn a permanent place on this page.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap supporters-wrap">
+      <!-- KEY SUPPORTERS — add each donor above $25 as a <li> like this:
+      <li class="supporter">
+        <span class="s-star" aria-hidden="true"><svg class="icon"><use href="#i-star"/></svg></span>
+        <span><span class="s-name">Their Name</span><span class="s-note">optional short note</span></span>
+      </li>
+      When the first supporter is added, delete the empty-state block below. -->
+      <ul class="supporter-grid" id="supporters" hidden></ul>
+
+      <div class="empty-state" id="emptyState">
+        <div class="es-icon" aria-hidden="true"><svg class="icon"><use href="#i-heart"/></svg></div>
+        <h2>Be among the first</h2>
+        <p>No names here yet — this page is brand new. Support Sieve with more than <b>$25</b> and yours will be the first to appear.</p>
+        <a class="btn btn-primary btn-lg" href="https://www.paypal.com/donate/?hosted_button_id=UK9EKFGU3PY9A" rel="noopener" target="_blank">
+          <svg class="icon" aria-hidden="true"><use href="#i-heart"/></svg>
+          Become a Key Supporter
+        </a>
+      </div>
+
+      <div style="text-align:center">
+        <a class="back-link" href="index.html"><svg class="icon sm" aria-hidden="true"><use href="#i-arrow-left"/></svg>Back to Sieve</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-bottom">
+    <span class="fmono">Sieve for <span class="amber">Android</span> · GPLv3 · not affiliated with any platform</span>
+    <span><a href="index.html">Home</a> · <a href="https://github.com/Massivemiike/sieve-android">Source</a></span>
+  </div>
+</footer>
+</body>
+</html>
