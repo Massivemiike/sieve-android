@@ -18,7 +18,7 @@ class NavInstrumentedTest {
 
     @Test
     fun bottomNavSwitchesDestinations() {
-        rule.onNodeWithText("download-screen").assertIsDisplayed()
+        rule.onNodeWithText("Sieve").assertIsDisplayed() // Download screen wordmark
 
         rule.onNodeWithTag("nav_queue").performClick()
         rule.onNodeWithText("queue-screen").assertIsDisplayed()
@@ -33,6 +33,6 @@ class NavInstrumentedTest {
         rule.onNodeWithText("settings-screen").assertIsDisplayed()
 
         rule.onNodeWithTag("nav_download").performClick()
-        rule.onNodeWithText("download-screen").assertIsDisplayed()
+        rule.onNodeWithText("Sieve").assertIsDisplayed()
     }
 }

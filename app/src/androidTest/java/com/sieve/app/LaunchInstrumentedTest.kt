@@ -16,7 +16,7 @@ class LaunchInstrumentedTest {
 
     @Test
     fun launchesToDownloadDestination() {
-        // Stub screens carry a unique "<route>-screen" subtitle (Tasks 9+ replace them).
-        rule.onNodeWithText("download-screen").assertIsDisplayed()
+        // The Download screen shows the Sieve wordmark in its top bar.
+        rule.onNodeWithText("Sieve").assertIsDisplayed()
     }
 }

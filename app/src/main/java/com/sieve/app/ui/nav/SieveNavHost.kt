@@ -60,7 +60,10 @@ fun SieveNavHost() {
         ) {
             Dest.entries.forEach { d ->
                 composable(d.route) {
-                    EmptyState(icon = d.icon, title = d.label, subtitle = "${d.route}-screen")
+                    when (d) {
+                        Dest.DOWNLOAD -> com.sieve.app.ui.download.DownloadRoute()
+                        else -> EmptyState(icon = d.icon, title = d.label, subtitle = "${d.route}-screen")
+                    }
                 }
             }
             composable(ROUTE_ABOUT) {
