@@ -102,5 +102,8 @@ dependencies {
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-test:2.0.21")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.0.21")
+    androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    androidTestImplementation("androidx.work:work-testing:2.9.1")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

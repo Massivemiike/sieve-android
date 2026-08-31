@@ -55,7 +55,7 @@ fun SettingsRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val grant = rememberOpenDocumentTree { uri -> vm.setOutputTree(uri.toString()) }
-    SettingsScreen(state, grant, vm::setThemeMode, vm::setAccent, vm::setDefaultPreset, vm::setMaxDownloads, vm::setMaxTranscodes, vm::updateEngine, vm::reset, onOpenAbout)
+    SettingsScreen(state, grant, vm::setThemeMode, vm::setAccent, vm::setDefaultPreset, vm::setMaxDownloads, vm::setMaxTranscodes, vm::updateEngine, vm::reset, onOpenAbout, updatesSlot = { com.sieve.app.update.UpdatesSection() })
 }
 
 @Composable
@@ -70,6 +70,7 @@ fun SettingsScreen(
     onUpdateEngine: () -> Unit,
     onReset: () -> Unit,
     onOpenAbout: () -> Unit,
+    updatesSlot: @Composable () -> Unit = {},
 ) {
     Scaffold(topBar = {
         Text("Settings", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
@@ -141,6 +142,8 @@ fun SettingsScreen(
                     RowItem("ffmpeg", "bundled · full-gpl")
                 }
             }
+
+            item { updatesSlot() }
 
             item { SectionLabel("About") }
             item {

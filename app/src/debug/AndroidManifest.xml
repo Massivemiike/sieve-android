@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug + androidTest only: allow cleartext so MockWebServer (http://localhost) works in the
+     ApkDownloader instrumentation test. Release builds keep the secure default (https-only). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>
