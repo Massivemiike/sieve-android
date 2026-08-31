@@ -13,3 +13,8 @@ wsl-verify.sh
 
 # Built ffmpeg binaries (produced by transcode/build-ffmpeg/ffbuild.sh, not committed)
 transcode/src/main/jniLibs/
+
+# Release signing — never commit the keystore or its passwords
+app/keystore.properties
+*.jks
+*.keystore
