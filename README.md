@@ -113,7 +113,7 @@ The self-built FFmpeg build script lives at `transcode/build-ffmpeg/ffbuild.sh`.
 
 The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-aligned and verified.
 
-**In active development** — `:app` (the UI layer). The Compose UI and DI wiring are being built out task-by-task per the UI plan; the module currently scaffolds a launchable `MainActivity` with the screens, ViewModels, theme, and graph wiring landing incrementally.
+**Built and tested** — `:app` (the UI layer). All five v1 screens are implemented in Jetpack Compose against the Sieve design system, each as a ViewModel + screen + tests: **Download** (analyze + 8 presets + enqueue), **Queue** (live progress, pause/resume/retry/cancel), **Transcode** (MediaCodec detection + 52 presets + CRF), **Library** (SAF browse/filter/delete + send-to-transcode), and **Settings/About** (theme + accent, concurrency, yt-dlp update, GPLv3 license compliance). The single-Activity DI graph initializes youtubedl-android + the ffmpeg binary on device, installs the `QueueRepository`, and an end-to-end smoke runs a real transcode through the production-wired queue to completion. Remaining polish before a release build: a real SAF-granted end-to-end pass, app signing, and store-free update wiring.
 
 **Deferred to post-v1** — the `:data` schema already carries entities for history, favorites, and subscriptions, but those features are out of scope for the first release. v1 focuses on a solid downloader and transcoder.
 
