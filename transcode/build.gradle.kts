@@ -17,6 +17,10 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     testOptions { unitTests.isReturnDefaultValues = true }
+
+    // The self-built ffmpeg ships as jniLibs/<abi>/libffmpeg.so and MUST be extracted to disk so it
+    // can be exec'd from nativeLibraryDir (Android blocks exec of mmap'd/app-data files).
+    packaging { jniLibs { useLegacyPackaging = true } }
 }
 
 dependencies {
