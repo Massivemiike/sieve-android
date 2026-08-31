@@ -15,7 +15,9 @@ object QueueReducer {
             val pos = (state.jobs.maxOfOrNull { it.position } ?: 0L) + 1L
             state.copy(jobs = state.jobs + event.job.copy(status = DownloadStatus.QUEUED, position = pos))
         }
-        is QueueEvent.MarkPreparing -> mapJobs(state, event.ids.toSet()) { it.copy(status = DownloadStatus.PREPARING) }
+        is QueueEvent.MarkPreparing -> mapJobs(state, event.ids.toSet()) {
+            if (it.status == DownloadStatus.QUEUED) it.copy(status = DownloadStatus.PREPARING) else it
+        }
         is QueueEvent.MarkRunning -> mapJob(state, event.id) {
             if (it.status == DownloadStatus.PREPARING) it.copy(status = DownloadStatus.RUNNING) else it
         }

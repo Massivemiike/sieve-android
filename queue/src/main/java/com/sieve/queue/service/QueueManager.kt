@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Process-scoped orchestrator. Owns the [QueueState] + a [Mutex], persists every transition, runs
@@ -51,17 +52,21 @@ class QueueManager(
     val state: StateFlow<QueueState> = _state.asStateFlow()
 
     private val mutex = Mutex()
-    private val runningJobs = mutableMapOf<String, Job>()
+    private val runningJobs = ConcurrentHashMap<String, Job>()
     private lateinit var scope: CoroutineScope
 
     init { QueueReducer.NOW = clock::nowMs }
 
-    private suspend fun dispatch(event: QueueEvent) = mutex.withLock {
+    private suspend fun dispatch(event: QueueEvent) = mutex.withLock { applyLocked(event) }
+
+    /**
+     * Reduce + persist. Caller MUST hold [mutex]. Persist runs in NonCancellable so a scope teardown
+     * (Service onDestroy) can't interrupt a Room transaction mid-write ("no current transaction").
+     */
+    private suspend fun applyLocked(event: QueueEvent) {
         val before = _state.value
         val after = QueueReducer.reduce(before, event)
         _state.value = after
-        // Persist in NonCancellable so a scope teardown (Service onDestroy) can't interrupt a Room
-        // transaction mid-write ("no current transaction"); the state is already updated in memory.
         withContext(NonCancellable) {
             val changed = after.jobs.filter { j -> before.job(j.id) != j }
             if (changed.isNotEmpty()) persistence.upsertAll(changed)
@@ -96,10 +101,13 @@ class QueueManager(
         scope.launch { drain() }
     }
 
-    private suspend fun drain() {
+    // Admission is atomic under the mutex: select → MarkPreparing → launchJob run without another
+    // drain interleaving. Multiple drain() calls race in production (two start() drains + finally +
+    // retry, all on Dispatchers.Default), so the whole claim must be serialized, not just the reduce.
+    private suspend fun drain() = mutex.withLock {
         val toAdmit = NextItemSelector.select(_state.value, clock.nowMs())
-        if (toAdmit.isEmpty()) return
-        dispatch(QueueEvent.MarkPreparing(toAdmit))
+        if (toAdmit.isEmpty()) return@withLock
+        applyLocked(QueueEvent.MarkPreparing(toAdmit))
         for (id in toAdmit) launchJob(id)
     }
 
@@ -110,6 +118,15 @@ class QueueManager(
             var prepared: PreparedOutput? = null
             try {
                 prepared = output.prepare(job)
+                // A pause/cancel that arrived during prepare() (a no-op for the not-yet-started port)
+                // must be honored before spawning — otherwise the job runs to completion regardless.
+                val pending = _state.value.job(id)?.cancelReason
+                if (pending != null) {
+                    val terminal = JobSignal.Terminal(id, Outcome.Cancelled(pending))
+                    dispatch(QueueEvent.Signal(terminal))
+                    onSignal(id, terminal, prepared)
+                    return@launch
+                }
                 val spawnJob = withOutput(job, prepared)
                 dispatch(QueueEvent.MarkRunning(id))
                 driver.drive(spawnJob) { _state.value.job(id)?.cancelReason }

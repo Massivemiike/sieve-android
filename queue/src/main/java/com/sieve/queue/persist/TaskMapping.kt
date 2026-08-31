@@ -35,7 +35,7 @@ object TaskMapping {
             inputPath = t?.inputPath, presetArgs = t?.presetArgs,
             totalDurationSec = t?.totalDurationSec, usedHardwareEncoder = t?.usedHardwareEncoder ?: false,
             outputDirLabel = job.output.outputDirLabel, outputTemplate = job.output.outputTemplate,
-            attempt = job.attempt, error = job.error, filePath = job.filePath,
+            attempt = job.attempt, nextEligibleAt = job.nextEligibleAt, error = job.error, filePath = job.filePath,
             notes = job.notes, colorTag = job.colorTag, pinned = job.pinned, completedAt = job.completedAt,
         )
     }
@@ -48,7 +48,7 @@ object TaskMapping {
             id = e.id, spec = spec, output = OutputRequest(e.outputDirLabel, e.outputTemplate),
             status = runCatching { DownloadStatus.valueOf(e.status) }.getOrDefault(DownloadStatus.QUEUED),
             progress = UnifiedProgress(fraction = if (e.progress > 0f) e.progress else null, sizeBytes = e.sizeBytes),
-            attempt = e.attempt, position = e.position, pinned = e.pinned,
+            attempt = e.attempt, nextEligibleAt = e.nextEligibleAt, position = e.position, pinned = e.pinned,
             error = e.error, filePath = e.filePath, title = e.title, channel = e.channel,
             site = e.site, format = e.format, durationSec = e.durationSec, thumbnailUrl = e.thumbnailUrl,
             colorTag = e.colorTag, notes = e.notes, completedAt = e.completedAt,

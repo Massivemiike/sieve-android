@@ -86,6 +86,20 @@ class QueueManagerTest {
         assertEquals(DownloadStatus.PAUSED, m.state.value.job("a")!!.status)
     }
 
+    @Test fun `pause during prepare lands PAUSED without spawning`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        // Port would complete the job if it ever spawned — so PAUSED (not COMPLETED) proves the short-circuit.
+        val port = FakeDownloadPort { flow { emit(EngineEvent.Completed(0)) } }
+        val (m, _) = manager(port, output = FakeOutputProvider(prepareGate = gate))
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        m.state.first { it.job("a")?.status == DownloadStatus.PREPARING } // stuck on the prepare gate
+        m.pause("a")                                                      // stamps PAUSE while PREPARING
+        gate.complete(Unit)                                              // release prepare
+        m.state.first { it.job("a")?.status == DownloadStatus.PAUSED }
+        assertEquals(DownloadStatus.PAUSED, m.state.value.job("a")!!.status)
+    }
+
     @Test fun `rehydrate reverts running to queued and re-drains`() = runTest {
         val persistence = InMemoryPersistence()
         persistence.upsert(dl("a").copy(status = DownloadStatus.RUNNING, position = 1))

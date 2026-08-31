@@ -16,11 +16,12 @@ class FakeClock(var t: Long = 1000L) : Clock {
     override fun nowMs() = t
 }
 
-class FakeOutputProvider : OutputLocationProvider {
+class FakeOutputProvider(private val prepareGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null) : OutputLocationProvider {
     val prepared = mutableListOf<String>()
     val finalized = mutableListOf<String>()
     val discarded = mutableListOf<String>()
     override suspend fun prepare(job: QueueJob): PreparedOutput {
+        prepareGate?.await() // when set, holds the job in PREPARING until released
         prepared += job.id
         return PreparedOutput("/work/${job.id}", "%(title)s.%(ext)s")
     }

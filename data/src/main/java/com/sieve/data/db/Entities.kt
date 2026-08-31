@@ -28,6 +28,7 @@ data class DownloadTaskEntity(
     val outputDirLabel: String = "",
     val outputTemplate: String = "",
     val attempt: Int = 0,
+    val nextEligibleAt: Long = 0L,           // transient auto-retry backoff; must survive process death
     val error: String? = null,
     val filePath: String? = null,
     val notes: String? = null,
