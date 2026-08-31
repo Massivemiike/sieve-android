@@ -10,3 +10,6 @@ captures/
 .cxx/
 .sdd-progress.md
 wsl-verify.sh
+
+# Built ffmpeg binaries (produced by transcode/build-ffmpeg/ffbuild.sh, not committed)
+transcode/src/main/jniLibs/

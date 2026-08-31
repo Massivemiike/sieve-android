@@ -1,0 +1,51 @@
+WRITTEN OFFER OF SOURCE — FFmpeg and its GPL dependencies
+==========================================================
+
+Sieve for Android bundles a self-built FFmpeg executable (packaged as
+libffmpeg.so and executed as a child process) statically linked with x264 and
+x265. FFmpeg is built with --enable-gpl --enable-version3, so the binary is
+licensed under the GNU General Public License, version 3 (see licenses/GPL.txt
+in this repository and the app's About screen).
+
+Corresponding source
+--------------------
+The complete corresponding source for the bundled FFmpeg and its GPL
+dependencies is the exact upstream commit of each project listed below, plus
+the build recipe in transcode/build-ffmpeg/ffbuild.sh in this repository. All
+three are unmodified upstream checkouts (no local patches).
+
+  FFmpeg   https://github.com/FFmpeg/FFmpeg.git
+           commit 818cecc6e1afab932cf4d40ef0d7b8cd40311a17
+  x264     https://code.videolan.org/videolan/x264.git
+           commit 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee
+  x265     https://bitbucket.org/multicoreware/x265_git.git
+           commit b81f650e21e8aacbe6a9ad04ce14aefc05b932c0
+
+Toolchain: Android NDK r27.3.13750724, minSdk API 26.
+ABIs built: arm64-v8a (device), x86_64 (emulator).
+
+Exact FFmpeg configure line
+---------------------------
+  ./configure \
+    --prefix=<out> \
+    --target-os=android --arch=<aarch64|x86_64> --enable-cross-compile \
+    --cc=<clang> --cxx=<clang++> --ar=llvm-ar --ranlib=llvm-ranlib \
+    --strip=llvm-strip --nm=llvm-nm --sysroot=<ndk-sysroot> \
+    --pkg-config=pkg-config --pkg-config-flags=--static \
+    --extra-cflags="-I<deps>/include -O2 -fPIC -fPIE" \
+    --extra-ldflags="-L<deps>/lib -pie -static-libstdc++ -Wl,-z,max-page-size=16384" \
+    --extra-libs="-lm" \
+    --enable-gpl --enable-version3 \
+    --enable-libx264 --enable-libx265 \
+    --enable-jni --enable-mediacodec \
+    --disable-shared --enable-static \
+    --disable-doc --disable-ffplay --disable-ffprobe \
+    --enable-ffmpeg
+
+To rebuild: run `bash transcode/build-ffmpeg/ffbuild.sh all` on a Linux host
+with the NDK at /opt/android-sdk/ndk/27.3.13750724. The script clones the exact
+repos above, applies the NDK libc++ pkg-config fix to x265.pc, and verifies 16KB
+LOAD alignment before emitting each ABI's libffmpeg.so.
+
+This written offer is valid for three (3) years from the date of distribution
+of the corresponding binary.
