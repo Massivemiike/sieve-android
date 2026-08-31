@@ -57,6 +57,13 @@ fun TranscodeRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val handoff by com.sieve.app.ui.common.SharedTranscodeSource.src.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(handoff) {
+        handoff?.let {
+            vm.addSource(SourceInput(it.uri, it.name, null))
+            com.sieve.app.ui.common.SharedTranscodeSource.consume()
+        }
+    }
     val pick = rememberOpenDocument(arrayOf("video/*", "audio/*")) { uri ->
         val name = DocumentFile.fromSingleUri(context, uri)?.name ?: "media"
         vm.addSource(SourceInput(uri.toString(), name, null))
@@ -90,7 +97,7 @@ fun TranscodeScreen(
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.padding(padding).fillMaxWidth(),
+            modifier = Modifier.padding(padding).fillMaxWidth().testTag("transcode_list"),
             contentPadding = PaddingValues(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {

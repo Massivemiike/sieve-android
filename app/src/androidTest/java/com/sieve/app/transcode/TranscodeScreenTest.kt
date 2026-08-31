@@ -1,8 +1,10 @@
 package com.sieve.app.transcode
 
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import com.sieve.app.ui.theme.SieveTheme
 import com.sieve.app.ui.transcode.SourceInput
 import com.sieve.app.ui.transcode.TranscodeRoute
@@ -38,6 +40,7 @@ class TranscodeScreenTest {
         rule.setContent { SieveTheme { TranscodeRoute(vm) } }
 
         rule.onNodeWithTag("encoder_hw-h264").assertExists()
+        rule.onNodeWithTag("transcode_list").performScrollToNode(hasTestTag("start_btn"))
         rule.onNodeWithTag("start_btn").performClick()
         rule.waitUntil(4_000) { sink.isNotEmpty() }
 

@@ -27,7 +27,7 @@ class NavInstrumentedTest {
         rule.onNodeWithText("Pick a video to transcode").assertIsDisplayed() // real Transcode screen (no source)
 
         rule.onNodeWithTag("nav_library").performClick()
-        rule.onNodeWithText("library-screen").assertIsDisplayed()
+        rule.onNodeWithText("Choose a folder").assertIsDisplayed() // real Library screen (no tree granted)
 
         rule.onNodeWithTag("nav_settings").performClick()
         rule.onNodeWithText("settings-screen").assertIsDisplayed()
