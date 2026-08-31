@@ -6,8 +6,10 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
+import com.sieve.app.ui.common.rememberAppSnackbarHost
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -29,8 +31,10 @@ fun SieveNavHost() {
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
     val showBar = currentRoute == null || Dest.entries.any { it.route == currentRoute }
+    val snackbarHost = rememberAppSnackbarHost()
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHost) },
         bottomBar = {
             if (showBar) {
                 NavigationBar {
