@@ -16,6 +16,7 @@ import com.sieve.queue.core.QueueState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -90,7 +91,7 @@ class QueueManager(
     }
 
     private suspend fun drain() {
-        val toAdmit = NextItemSelector.select(_state.value)
+        val toAdmit = NextItemSelector.select(_state.value, clock.nowMs())
         if (toAdmit.isEmpty()) return
         dispatch(QueueEvent.MarkPreparing(toAdmit))
         for (id in toAdmit) launchJob(id)
@@ -123,8 +124,26 @@ class QueueManager(
         when (signal.outcome) {
             Outcome.Succeeded -> { output.finalize(job, prepared); onCompleted(job) }
             is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) output.discard(job, prepared)
-            is Outcome.Failed -> if (job.status == DownloadStatus.FAILED) output.discard(job, prepared)
+            is Outcome.Failed ->
+                if (job.status == DownloadStatus.QUEUED) {
+                    // reducer chose auto-retry → schedule a delayed re-drain after the backoff
+                    scope.launch { delay(_state.value.retryPolicy.backoffMs); drain() }
+                } else if (job.status == DownloadStatus.FAILED) {
+                    output.discard(job, prepared)
+                }
         }
+    }
+
+    /** Rewrite the engine args of QUEUED download rows when a global setting changes (rewriteQueued* analog). */
+    suspend fun reconcileQueuedArgs(transform: (List<String>) -> List<String>) = mutex.withLock {
+        val updated = _state.value.jobs.map { j ->
+            val spec = j.spec
+            if (j.status == DownloadStatus.QUEUED && spec is JobSpec.Download)
+                j.copy(spec = JobSpec.Download(spec.url, transform(spec.engineArgs)))
+            else j
+        }
+        _state.value = _state.value.copy(jobs = updated)
+        persistence.upsertAll(updated.filter { it.status == DownloadStatus.QUEUED })
     }
 
     /**

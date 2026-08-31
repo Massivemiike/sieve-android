@@ -58,6 +58,8 @@ data class QueueJob(
     val status: DownloadStatus = DownloadStatus.QUEUED,
     val progress: UnifiedProgress = UnifiedProgress(),
     val attempt: Int = 0,
+    /** Epoch ms before which a QUEUED job must NOT be admitted (transient auto-retry backoff). 0 = now. */
+    val nextEligibleAt: Long = 0L,
     val position: Long = 0L,            // persisted queue order (desktop used array index)
     val pinned: Boolean = false,        // view-only float; does NOT affect run order
     val cancelReason: CancelReason? = null,

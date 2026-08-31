@@ -7,7 +7,9 @@ package com.sieve.queue.core
  * `pinned` is a view-only float and does NOT affect it.
  */
 object NextItemSelector {
-    fun select(state: QueueState): List<String> {
+    /** [now] gates the transient auto-retry backoff: a QUEUED job with `nextEligibleAt > now` waits.
+     *  Defaults to [Long.MAX_VALUE] so backoff-unaware callers (pure tests) admit everything. */
+    fun select(state: QueueState, now: Long = Long.MAX_VALUE): List<String> {
         if (state.globalPaused) return emptyList()
 
         fun occupied(kind: JobKind) = state.jobs.count {
@@ -18,7 +20,7 @@ object NextItemSelector {
         var txFree = (state.maxTranscodes - occupied(JobKind.TRANSCODE)).coerceAtLeast(0)
 
         val admitted = mutableListOf<String>()
-        for (job in state.jobs.filter { it.status == DownloadStatus.QUEUED }.sortedBy { it.position }) {
+        for (job in state.jobs.filter { it.status == DownloadStatus.QUEUED && it.nextEligibleAt <= now }.sortedBy { it.position }) {
             when (job.kind) {
                 JobKind.DOWNLOAD -> if (dlFree > 0) { admitted += job.id; dlFree-- }
                 JobKind.TRANSCODE -> if (txFree > 0) { admitted += job.id; txFree-- }

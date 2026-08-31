@@ -35,12 +35,12 @@ object QueueReducer {
         }
         is QueueEvent.Resume -> mapJob(state, event.id) {
             if (it.status == DownloadStatus.PAUSED)
-                it.copy(status = DownloadStatus.QUEUED, progress = it.progress.copy(speed = null, eta = null)) else it
+                it.copy(status = DownloadStatus.QUEUED, nextEligibleAt = 0L, progress = it.progress.copy(speed = null, eta = null)) else it
         }
         is QueueEvent.Retry -> mapJob(state, event.id) {
             if (it.status == DownloadStatus.FAILED)
                 it.copy(
-                    status = DownloadStatus.QUEUED, error = null, attempt = it.attempt + 1,
+                    status = DownloadStatus.QUEUED, error = null, attempt = it.attempt + 1, nextEligibleAt = 0L,
                     completedAt = null, cancelReason = null, progress = UnifiedProgress(phase = Phase.QUEUED),
                 ) else it
         }
@@ -54,7 +54,7 @@ object QueueReducer {
             jobs = state.jobs.map {
                 if (it.status in NON_TERMINAL_INFLIGHT)
                     it.copy(
-                        status = DownloadStatus.QUEUED, cancelReason = null,
+                        status = DownloadStatus.QUEUED, cancelReason = null, nextEligibleAt = 0L,
                         progress = it.progress.copy(speed = null, eta = null),
                     )
                 else it
@@ -96,7 +96,8 @@ object QueueReducer {
                     val canAuto = cls == RetryClass.TRANSIENT && it.attempt < state.retryPolicy.maxAutoRetries
                     if (canAuto) it.copy(
                         status = DownloadStatus.QUEUED, attempt = it.attempt + 1,
-                        error = null, cancelReason = null, progress = it.progress.copy(speed = null, eta = null),
+                        error = null, cancelReason = null, nextEligibleAt = NOW() + state.retryPolicy.backoffMs,
+                        progress = it.progress.copy(speed = null, eta = null),
                     ) else it.copy(
                         status = DownloadStatus.FAILED, error = outcome.info.message,
                         completedAt = NOW(), cancelReason = null,
