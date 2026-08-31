@@ -24,7 +24,7 @@ class NavInstrumentedTest {
         rule.onNodeWithText("Queue is empty").assertIsDisplayed() // real Queue screen (empty)
 
         rule.onNodeWithTag("nav_transcode").performClick()
-        rule.onNodeWithText("transcode-screen").assertIsDisplayed()
+        rule.onNodeWithText("Pick a video to transcode").assertIsDisplayed() // real Transcode screen (no source)
 
         rule.onNodeWithTag("nav_library").performClick()
         rule.onNodeWithText("library-screen").assertIsDisplayed()

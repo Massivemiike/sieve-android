@@ -58,6 +58,7 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlin:kotlin-test:2.0.21")

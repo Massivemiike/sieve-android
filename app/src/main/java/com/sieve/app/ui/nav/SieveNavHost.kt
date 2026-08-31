@@ -63,6 +63,7 @@ fun SieveNavHost() {
                     when (d) {
                         Dest.DOWNLOAD -> com.sieve.app.ui.download.DownloadRoute()
                         Dest.QUEUE -> com.sieve.app.ui.queue.QueueRoute()
+                        Dest.TRANSCODE -> com.sieve.app.ui.transcode.TranscodeRoute()
                         else -> EmptyState(icon = d.icon, title = d.label, subtitle = "${d.route}-screen")
                     }
                 }

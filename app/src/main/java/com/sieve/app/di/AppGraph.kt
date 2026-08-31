@@ -1,10 +1,13 @@
 package com.sieve.app.di
 
 import android.app.Application
+import android.content.Context
+import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.room.Room
+import kotlinx.coroutines.withContext
 import com.sieve.app.settings.AppSettings
 import com.sieve.data.db.SieveDatabase
 import com.sieve.engine.EngineInit
@@ -45,11 +48,14 @@ object AppGraph {
     lateinit var ffmpegBinaryPath: String; private set
     var ffmpegEncodersStdout: String = ""; private set
 
+    private lateinit var appContext: Context
+
     @Volatile private var initialized = false
 
     @Synchronized
     fun init(app: Application) {
         if (initialized) return
+        appContext = app
         val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -80,5 +86,20 @@ object AppGraph {
         )
         queue = QueueRepository.create(app, manager, appScope)
         initialized = true
+    }
+
+    /**
+     * Materializes a SAF/content source into a real file path ffmpeg can read (native processes can't
+     * open a content:// URI). Copies into cacheDir; the transcode work file lands under the SAF sink
+     * via the queue's finalize.
+     */
+    suspend fun materializeSource(uriStr: String, name: String): String = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val ext = name.substringAfterLast('.', "mp4")
+        val dst = File(appContext.cacheDir, "tx-src-${System.nanoTime()}.$ext")
+        appContext.contentResolver.openInputStream(Uri.parse(uriStr)).use { input ->
+            requireNotNull(input) { "cannot open source $uriStr" }
+            dst.outputStream().use { input.copyTo(it) }
+        }
+        dst.absolutePath
     }
 }
