@@ -62,6 +62,7 @@ fun SieveNavHost() {
                 composable(d.route) {
                     when (d) {
                         Dest.DOWNLOAD -> com.sieve.app.ui.download.DownloadRoute()
+                        Dest.QUEUE -> com.sieve.app.ui.queue.QueueRoute()
                         else -> EmptyState(icon = d.icon, title = d.label, subtitle = "${d.route}-screen")
                     }
                 }

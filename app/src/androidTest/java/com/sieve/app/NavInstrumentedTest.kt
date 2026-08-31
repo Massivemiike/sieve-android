@@ -21,7 +21,7 @@ class NavInstrumentedTest {
         rule.onNodeWithText("Sieve").assertIsDisplayed() // Download screen wordmark
 
         rule.onNodeWithTag("nav_queue").performClick()
-        rule.onNodeWithText("queue-screen").assertIsDisplayed()
+        rule.onNodeWithText("Queue is empty").assertIsDisplayed() // real Queue screen (empty)
 
         rule.onNodeWithTag("nav_transcode").performClick()
         rule.onNodeWithText("transcode-screen").assertIsDisplayed()
