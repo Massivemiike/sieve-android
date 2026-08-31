@@ -15,7 +15,8 @@ class LaunchInstrumentedTest {
     val rule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun showsWordmark() {
-        rule.onNodeWithText("Sieve").assertIsDisplayed()
+    fun launchesToDownloadDestination() {
+        // Stub screens carry a unique "<route>-screen" subtitle (Tasks 9+ replace them).
+        rule.onNodeWithText("download-screen").assertIsDisplayed()
     }
 }
