@@ -22,6 +22,11 @@ android {
 dependencies {
     // Native engine (only repo/ uses it; pure sub-packages stay JVM-only)
     implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
+    // ffmpeg companion: youtubedl-android wires ITS ffmpeg into yt-dlp's process so post-processing
+    // (video+audio merge, MP3 extract, format convert) works. yt-dlp can't spawn our own ffmpeg from
+    // its embedded Python (the nested subprocess deadlocks). Sieve's own ffmpeg (renamed
+    // libsieveffmpeg.so) is still used by :transcode for HW/loudnorm work.
+    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
 

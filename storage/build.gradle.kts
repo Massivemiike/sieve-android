@@ -19,7 +19,7 @@ android {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
     }
-    // Extract :transcode's transitive libffmpeg.so so the storage smoke can exec it for frame grabs.
+    // Extract :transcode's transitive libsieveffmpeg.so so the storage smoke can exec it for frame grabs.
     packaging { jniLibs { useLegacyPackaging = true } }
 }
 

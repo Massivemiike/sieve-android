@@ -17,6 +17,10 @@ object EngineInit {
         if (initialized) return
         try {
             YoutubeDL.getInstance().init(context)
+            // Extracts the companion ffmpeg + ffprobe and registers them with youtubedl-android so
+            // yt-dlp can run its post-processors (merge / audio-extract / convert). Without this,
+            // any preset that needs ffmpeg hangs the download. Must run before the first download.
+            com.yausername.ffmpeg.FFmpeg.getInstance().init(context)
         } catch (e: Exception) {
             // Already initialized (or a partial init from a prior launch) — safe to ignore.
         }

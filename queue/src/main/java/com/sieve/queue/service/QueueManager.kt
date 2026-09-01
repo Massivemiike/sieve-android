@@ -3,6 +3,7 @@ package com.sieve.queue.service
 import com.sieve.queue.core.ArgReconciler
 import com.sieve.queue.core.CancelReason
 import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.FailureInfo
 import com.sieve.queue.core.JobSignal
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.NextItemSelector
@@ -18,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -105,6 +107,12 @@ class QueueManager(
     // drain interleaving. Multiple drain() calls race in production (two start() drains + finally +
     // retry, all on Dispatchers.Default), so the whole claim must be serialized, not just the reduce.
     private suspend fun drain() = mutex.withLock {
+        // Admission needs a LIVE host scope: launchJob launches on `scope` (the service's, via
+        // bindManager). Between the service idling out (scope cancelled) and the next bind, a drain
+        // would MarkPreparing and then silently drop the launch on the dead scope — wedging the job
+        // in PREPARING forever (the rebound service's drain only admits QUEUED). Leave jobs QUEUED;
+        // start()'s kick re-drains once a live scope is bound.
+        if (!this::scope.isInitialized || !scope.isActive) return@withLock
         val toAdmit = NextItemSelector.select(_state.value, clock.nowMs())
         if (toAdmit.isEmpty()) return@withLock
         applyLocked(QueueEvent.MarkPreparing(toAdmit))
@@ -130,7 +138,24 @@ class QueueManager(
                 val spawnJob = withOutput(job, prepared)
                 dispatch(QueueEvent.MarkRunning(id))
                 driver.drive(spawnJob) { _state.value.job(id)?.cancelReason }
-                    .collect { signal -> dispatch(QueueEvent.Signal(signal)); onSignal(id, signal, prepared) }
+                    .collect { signal ->
+                        if (signal is JobSignal.Terminal && signal.outcome == Outcome.Succeeded) {
+                            // Finalize BEFORE dispatching COMPLETED. The COMPLETED dispatch flips the
+                            // queue idle, which stops QueueService → onDestroy cancels the manager's
+                            // scope → a finalize still copying out of the work dir dies with
+                            // JobCancellationException and the file never reaches user storage.
+                            // A real finalize failure surfaces as FAILED instead of a fake success.
+                            val fin = runCatching { onSignal(id, signal, prepared) }
+                            val terminal = fin.exceptionOrNull()?.let { t ->
+                                if (t is CancellationException) throw t
+                                JobSignal.Terminal(id, Outcome.Failed(FailureInfo("saving output failed: ${t.message}")))
+                            } ?: signal
+                            dispatch(QueueEvent.Signal(terminal))
+                        } else {
+                            dispatch(QueueEvent.Signal(signal))
+                            onSignal(id, signal, prepared)
+                        }
+                    }
             } catch (c: CancellationException) {
                 throw c
             } finally {
@@ -145,7 +170,20 @@ class QueueManager(
         if (signal !is JobSignal.Terminal) return
         val job = _state.value.job(id) ?: return
         when (signal.outcome) {
-            Outcome.Succeeded -> { output.finalize(job, prepared); onCompleted(job) }
+            Outcome.Succeeded -> {
+                // NonCancellable: the copy out of the work dir must survive service teardown
+                // (idle stop, dataSync timeout) once the download itself has succeeded.
+                withContext(NonCancellable) {
+                    try {
+                        val loc = output.finalize(job, prepared)
+                        android.util.Log.i("SieveFin", "finalize OK id=${job.id} -> ${loc.displayPath} uri=${loc.uri}")
+                    } catch (t: Throwable) {
+                        android.util.Log.e("SieveFin", "finalize FAILED id=${job.id}", t)
+                        throw t
+                    }
+                    onCompleted(job)
+                }
+            }
             is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) output.discard(job, prepared)
             is Outcome.Failed ->
                 if (job.status == DownloadStatus.QUEUED) {

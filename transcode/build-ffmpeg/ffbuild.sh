@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Cross-compile a 16KB-aligned, full-GPL ffmpeg executable for Android — arm64-v8a (device) and
-# x86_64 (emulator). Each ABI yields a static-PIE `libffmpeg.so` (libx264 + libx265 + MediaCodec),
+# x86_64 (emulator). Each ABI yields a static-PIE `libsieveffmpeg.so` (libx264 + libx265 + MediaCodec),
 # verified for the x265 libc++ pkg-config fix and 16KB LOAD alignment, then copied under jniLibs/.
 #
 # Usage:  bash ffbuild.sh [arm64-v8a|x86_64|all]   (default: all)
-# Output: <repo>/transcode/src/main/jniLibs/<abi>/libffmpeg.so
+# Output: <repo>/transcode/src/main/jniLibs/<abi>/libsieveffmpeg.so
 set -euo pipefail
 
 NDK=/opt/android-sdk/ndk/27.3.13750724
@@ -102,7 +102,7 @@ EOF
     --disable-doc --disable-ffplay --disable-ffprobe \
     --enable-ffmpeg
   make -j"$J"
-  local SO=$ROOT/$ABI/libffmpeg.so
+  local SO=$ROOT/$ABI/libsieveffmpeg.so
   cp ffmpeg "$SO"
   "$STRIP" "$SO" || true
 
@@ -113,9 +113,9 @@ EOF
   [ "$ALIGN" = "0x4000" ] || fatal "[$ABI] LOAD alignment is $ALIGN, expected 0x4000 (16KB)"
 
   mkdir -p "$JNILIBS/$ABI"
-  cp "$SO" "$JNILIBS/$ABI/libffmpeg.so"
-  ls -la "$JNILIBS/$ABI/libffmpeg.so"
-  echo "[$ABI] ALL_DONE -> $JNILIBS/$ABI/libffmpeg.so"
+  cp "$SO" "$JNILIBS/$ABI/libsieveffmpeg.so"
+  ls -la "$JNILIBS/$ABI/libsieveffmpeg.so"
+  echo "[$ABI] ALL_DONE -> $JNILIBS/$ABI/libsieveffmpeg.so"
 }
 
 WHICH=${1:-all}

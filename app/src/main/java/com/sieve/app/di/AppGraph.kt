@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
 import androidx.room.Room
 import kotlinx.coroutines.withContext
 import com.sieve.app.settings.AppSettings
@@ -30,6 +31,8 @@ import com.sieve.transcode.runner.android.FfmpegBinary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.io.File
 
 /**
@@ -73,6 +76,9 @@ object AppGraph {
             Runtime.getRuntime().availableProcessors()
         }
 
+        // No ffmpegLocation: the youtubedl-android :ffmpeg companion (initialized in EngineInit)
+        // provides ffmpeg to yt-dlp. Passing our own libsieveffmpeg.so via --ffmpeg-location makes
+        // yt-dlp try to spawn it from its embedded Python, which deadlocks.
         engine = YtDlpEngineImpl(YoutubeDLClientImpl(app), GithubReleaseApiImpl())
 
         val db = Room.databaseBuilder(app, SieveDatabase::class.java, "sieve.db").build()
@@ -85,7 +91,29 @@ object AppGraph {
             JobDriver(dlPort, txPort), dlPort, txPort, persistence, output, SystemClock(),
         )
         queue = QueueRepository.create(app, manager, appScope)
+        autoUpdateYtDlp(ioScope)
         initialized = true
+    }
+
+    /**
+     * Keeps yt-dlp current WITHOUT user action. The bundled binary (youtubedl-android 0.18.1 ships
+     * yt-dlp 2025.11.12) is already too old for YouTube (SABR streaming → downloads fail out of the
+     * box), so a fresh install MUST self-update before it can download. Throttled to once per 12h;
+     * failures are silent (offline first launch just tries again next open, and Settings keeps the
+     * manual Update button).
+     */
+    private fun autoUpdateYtDlp(scope: CoroutineScope) {
+        val key = androidx.datastore.preferences.core.longPreferencesKey("ytdlp_auto_updated_at")
+        scope.launch {
+            runCatching {
+                val last = prefs.data.first()[key] ?: 0L
+                val now = System.currentTimeMillis()
+                if (now - last < 12 * 60 * 60 * 1000L) return@launch
+                engine.doUpdate(com.sieve.engine.update.UpdateChannel.STABLE)
+                prefs.edit { it[key] = now }
+                android.util.Log.i("SieveEngine", "yt-dlp auto-update done (now ${engine.version()})")
+            }.onFailure { android.util.Log.w("SieveEngine", "yt-dlp auto-update skipped: ${it.message}") }
+        }
     }
 
     /**

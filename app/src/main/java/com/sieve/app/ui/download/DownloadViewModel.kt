@@ -41,7 +41,9 @@ class DownloadViewModel(
     private val engine: YtDlpEngine,
     private val enqueue: (QueueJob) -> Unit,
     private val engineSettings: suspend () -> EngineSettings = { EngineSettings() },
-    private val outputDirLabel: suspend () -> String = { "Download/Sieve" },
+    // Blank = the sink's own root (MediaStore: Download/Sieve). A non-blank value becomes a
+    // SUBFOLDER under that root — passing "Download/Sieve" here created Download/Sieve/Download_Sieve.
+    private val outputDirLabel: suspend () -> String = { "" },
     private val idGen: () -> String = { UUID.randomUUID().toString() },
 ) : ViewModel() {
 
@@ -115,7 +117,7 @@ class DownloadViewModel(
                     cookiesFile = p.cookiesFileUri ?: "",
                 )
             },
-            outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "Download/Sieve" },
+            outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "" },
         )
     }
 }

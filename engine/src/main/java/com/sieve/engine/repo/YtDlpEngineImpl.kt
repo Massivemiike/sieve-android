@@ -78,6 +78,7 @@ class YtDlpEngineImpl(
     override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = channelFlow {
         cancelledIds.remove(id)
         ensureOutputDir(args)
+        android.util.Log.i("SieveDL", "download start id=$id args=$args")
         withContext(io) {
             try {
                 val result = client.execute(id, url, args) { _, _, line ->
@@ -91,6 +92,9 @@ class YtDlpEngineImpl(
                         }
                     }
                 }
+                if (result.exitCode != 0) {
+                    android.util.Log.e("SieveDL", "EXIT=${result.exitCode}\nSTDERR:\n${result.err.takeLast(4000)}\nSTDOUT:\n${result.out.takeLast(1500)}")
+                }
                 send(EngineEvent.Completed(result.exitCode))
             } catch (e: CancellationException) {
                 send(EngineEvent.Cancelled)
@@ -101,6 +105,7 @@ class YtDlpEngineImpl(
                 if (cancelledIds.remove(id)) {
                     send(EngineEvent.Cancelled)
                 } else {
+                    android.util.Log.e("SieveDL", "DL threw: ${e.javaClass.simpleName}\n${e.message?.takeLast(4000)}")
                     send(EngineEvent.Log(e.message ?: "download failed", null, true))
                     send(EngineEvent.Completed(1))
                 }

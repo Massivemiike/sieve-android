@@ -59,7 +59,8 @@ class TranscodeViewModel(
     private val enqueue: (QueueJob) -> Unit,
     private val materialize: suspend (uri: String, name: String) -> String,
     private val coreCount: () -> Int = { Runtime.getRuntime().availableProcessors() },
-    private val outputDirLabel: suspend () -> String = { "Download/Sieve" },
+    // Blank = the sink's own root (Download/Sieve); non-blank = a subfolder under it.
+    private val outputDirLabel: suspend () -> String = { "" },
     private val idGen: () -> String = { UUID.randomUUID().toString() },
 ) : ViewModel() {
 
@@ -129,7 +130,7 @@ class TranscodeViewModel(
             detector = AppGraph.encoderDetector,
             enqueue = { AppGraph.queue.enqueue(it) },
             materialize = { uri, name -> AppGraph.materializeSource(uri, name) },
-            outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "Download/Sieve" },
+            outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "" },
         )
     }
 }

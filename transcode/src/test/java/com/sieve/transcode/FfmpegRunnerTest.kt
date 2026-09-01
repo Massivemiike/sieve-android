@@ -66,7 +66,7 @@ class FfmpegRunnerTest {
         val fac = FakeFfmpegProcessFactory(
             listOf(FakeFfmpegProcess(stdout = listOf("out_time_us=1000000\nprogress=continue\n", "out_time_us=2000000\nprogress=continue\n"), exit = 0)),
         )
-        val ev = FfmpegRunner(fac, "/lib/libffmpeg.so").run(TranscodeJob("a", "b", listOf("-c:v", "libx264"), 10.0, false)).toList()
+        val ev = FfmpegRunner(fac, "/lib/libsieveffmpeg.so").run(TranscodeJob("a", "b", listOf("-c:v", "libx264"), 10.0, false)).toList()
         assertEquals(2, ev.count { it is TranscodeEvent.Progress })
         assertTrue(ev.last() is TranscodeEvent.Done && (ev.last() as TranscodeEvent.Done).exitCode == 0)
         assertNull((ev.last() as TranscodeEvent.Done).errorSummary)

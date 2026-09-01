@@ -64,7 +64,7 @@ Multi-module Gradle project. Pure logic (parsers, argument builders, the queue s
 | Module | Package | Responsibility |
 | --- | --- | --- |
 | **`:engine`** | `com.sieve.engine` | yt-dlp integration: `analyze`, `download` (cold `Flow<EngineEvent>`), and runtime self-update (`updateYoutubeDL` STABLE/NIGHTLY + a direct-from-GitHub fallback). Ports the desktop argument builder (`YtdlpArgs`), the progress/error/analyze parsers, and the version-compare + GitHub-releases update layer. The native client sits behind a testable `YoutubeDLClient` seam. |
-| **`:transcode`** | `com.sieve.transcode` | The **52-preset** FFmpeg catalog (byte-exact port — token order is load-bearing), MediaCodec hardware-encoder detection (`EncoderDetector` + `AndroidVideoEncoderProbe` over `MediaCodecList`), the thread-cap / CRF / loudnorm / finalize pipeline (`ArgFinalizer`, `ThreadCaps`), custom-preset import/export, and the FFmpeg `-progress` parser + `FfmpegRunner` that execs the self-built `libffmpeg.so`. |
+| **`:transcode`** | `com.sieve.transcode` | The **52-preset** FFmpeg catalog (byte-exact port — token order is load-bearing), MediaCodec hardware-encoder detection (`EncoderDetector` + `AndroidVideoEncoderProbe` over `MediaCodecList`), the thread-cap / CRF / loudnorm / finalize pipeline (`ArgFinalizer`, `ThreadCaps`), custom-preset import/export, and the FFmpeg `-progress` parser + `FfmpegRunner` that execs the self-built `libsieveffmpeg.so`. |
 | **`:data`** | `com.sieve.data` | Room persistence (domain-agnostic — status stored as `String`): entities/DAOs for download tasks, history, custom presets, favorites, and subscriptions, plus type `Converters`. Depended on by `:queue`. |
 | **`:queue`** | `com.sieve.queue` | Pure-JVM state machine (`core`: `QueueReducer` transition matrix, `NextItemSelector`, `RetryClassifier`, `ProgressMapper`, `QueueAggregator`) + a foreground-**Service** scheduler (`service`: `QueueManager`, `JobDriver`, `QueueService`, notifications, `Real{Download,Transcode}Port`) + a Room-backed persistence bridge (`persist`: `RoomQueuePersistence`) so the queue survives process death and auto-resumes. Output location is an `OutputLocationProvider` seam. Depends on `:data`, `:engine`, `:transcode`. |
 | **`:storage`** | `com.sieve.storage` | Fills the queue's `OutputLocationProvider` seam with a SAF/MediaStore implementation: `SafOutputProvider` writes to a real app-files work dir then **stream-copies** into a `DestinationSink` (`SafTreeSink` / `MediaStoreDownloadsSink` / `AppFilesSink`, chosen by `DefaultSinkSelector`) — never handing a `content://` URI to a native process. Also a `DocumentFile`-based Library browser (`LibraryNavigator` / `LibraryFilter` / `SafDocumentStore`) and subtitle (`SubtitleExporter`) / frame (`FrameExtractor`) export. Depends on `:queue`, `:transcode`. |
@@ -107,7 +107,7 @@ The self-built FFmpeg build script lives at `transcode/build-ffmpeg/ffbuild.sh`.
 **Complete and tested** — `:engine`, `:transcode`, `:data`, `:queue`, and `:storage` all pass green JVM unit / Robolectric suites plus on-device instrumentation on an Android-15 16KB-page emulator:
 
 - Engine analyze / download / self-update.
-- The 52 transcode argument-vectors byte-verified in review, plus a real `libffmpeg.so` transcode smoke test.
+- The 52 transcode argument-vectors byte-verified in review, plus a real `libsieveffmpeg.so` transcode smoke test.
 - Room DAO CRUD and the full enqueue → complete → persist → process-death → resume path.
 - SAF prepare / finalize / frame-grab end-to-end.
 
@@ -126,7 +126,7 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 - **Persistence:** Room 2.6.1 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).
 - **yt-dlp engine:** `io.github.junkfood02.youtubedl-android:library:0.18.1` (GPL-3.0).
-- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; libx264 + libx265 + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
+- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; libx264 + libx265 + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
 
 ---
 

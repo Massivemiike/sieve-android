@@ -19,6 +19,6 @@ class AppGraphInstrumentedTest {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         val repo = QueueRepository.get(ctx) // throws if install() never ran
         assertNotNull(repo)
-        assertTrue(AppGraph.ffmpegBinaryPath.endsWith("libffmpeg.so"))
+        assertTrue(AppGraph.ffmpegBinaryPath.endsWith("libsieveffmpeg.so"))
     }
 }

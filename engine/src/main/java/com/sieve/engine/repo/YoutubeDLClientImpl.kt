@@ -16,7 +16,12 @@ class YoutubeDLClientImpl(private val ctx: Context) : YoutubeDLClient {
         onProgress: (Float, Long, String) -> Unit,
     ): ExecResult {
         val req = YoutubeDLRequest(url)
-        options.forEach { req.addOption(it) }
+        // Pass the args VERBATIM. Do NOT use addOption() per-token: youtubedl-android stores each
+        // option as a map key (LinkedHashMap<String, List<String>>), so adding a flag and its value
+        // as two separate single-arg addOption() calls makes each its own key with an empty value —
+        // which breaks every flag+value pair (-f, -P, -o, --ffmpeg-location). addCommands() appends
+        // the tokens as-is (customCommandList) before the url, exactly like a real argv.
+        req.addCommands(options)
         val resp = YoutubeDL.getInstance().execute(req, processId) { p, e, l -> onProgress(p, e, l) }
         return ExecResult(resp.exitCode, resp.out, resp.err)
     }
