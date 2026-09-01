@@ -35,7 +35,17 @@ class RealTranscodePort(binaryPath: String) : TranscodePort {
 
     override fun run(id: String, job: TranscodeJob): Flow<TranscodeEvent> {
         currentId = id
-        return runner.run(job)
+        // Spawn-time source adaptation (persisted preset args stay byte-exact):
+        //  - AV1 inputs must hardware-decode (`-c:v av1_mediacodec` before -i) — the bundled ffmpeg
+        //    has no working software AV1 decoder, so they otherwise fail with 0 frames encoded.
+        //  - MediaCodec encoders ignore -crf/-preset and default to ~200 kbps: the sanitizer strips
+        //    them and injects a height/CRF-derived -b:v.
+        val info = com.sieve.transcode.runner.android.SourceProbe.probe(job.inputPath)
+        val adapted = job.copy(
+            inputArgs = com.sieve.transcode.runner.android.SourceProbe.requiredInputArgs(info),
+            presetArgs = com.sieve.transcode.args.MediaCodecSanitizer.sanitize(job.presetArgs, info?.height),
+        )
+        return runner.run(adapted)
     }
 
     override suspend fun cancel(id: String, graceMs: Long) {

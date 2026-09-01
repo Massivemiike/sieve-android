@@ -88,7 +88,7 @@ class FfmpegRunner(
         private val ANSI = Regex("\\[[0-9;]*[A-Za-z]")
 
         fun buildFullArgs(job: TranscodeJob): List<String> =
-            listOf("-y", "-progress", "pipe:1", "-i", job.inputPath) + job.presetArgs + listOf(job.outputPath)
+            listOf("-y", "-progress", "pipe:1") + job.inputArgs + listOf("-i", job.inputPath) + job.presetArgs + listOf(job.outputPath)
 
         /**
          * Swap the video codec token after `-c:v` from MediaCodec to its software counterpart.
