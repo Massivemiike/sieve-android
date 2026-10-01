@@ -3,6 +3,7 @@ package com.sieve.app.ui.download
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sieve.app.di.AppGraph
+import com.sieve.app.settings.NetworkSettings
 import com.sieve.engine.args.DownloadArgsOptions
 import com.sieve.engine.args.EngineSettings
 import com.sieve.engine.args.YtdlpArgs
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.io.File
 import java.util.UUID
 
 data class DownloadUiState(
@@ -50,6 +52,8 @@ class DownloadViewModel(
     // Blank = the sink's own root (MediaStore: Download/Sieve). A non-blank value becomes a
     // SUBFOLDER under that root — passing "Download/Sieve" here created Download/Sieve/Download_Sieve.
     private val outputDirLabel: suspend () -> String = { "" },
+    /** The Settings speed limit (`--limit-rate`), already normalised; null = unlimited. */
+    private val speedLimit: suspend () -> String? = { null },
     private val idGen: () -> String = { UUID.randomUUID().toString() },
     // The preset the screen starts on, and where a pick is remembered. Like the desktop app (NewDownload.tsx
     // starts on `lastPreset || defaultPreset`), the last preset you chose is the one you start on next time.
@@ -80,7 +84,9 @@ class DownloadViewModel(
         if (url.isEmpty() || _state.value.analyzing) return
         _state.value = _state.value.copy(analyzing = true, error = null, errorHint = null)
         viewModelScope.launch {
-            when (val outcome = engine.analyze(url, null)) {
+            // The cookies file is anonymous-first inside the engine: it is only tried when the site asks for a login.
+            val cookies = engineSettings().cookiesFile.ifBlank { null }
+            when (val outcome = engine.analyze(url, null, cookies)) {
                 is AnalyzeOutcome.Success ->
                     _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, error = null, errorHint = null)
                 is AnalyzeOutcome.Failure -> {
@@ -103,6 +109,7 @@ class DownloadViewModel(
                 audioOnly = preset.audioOnly,
                 // Embed metadata + cover art on every preset, as the desktop form does by default.
                 toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES,
+                speedLimit = speedLimit(),
             )
             val args = YtdlpArgs.build(opts, engineSettings())
             val job = QueueJob(
@@ -129,11 +136,13 @@ class DownloadViewModel(
             engineSettings = {
                 val p = AppGraph.appSettings.flow.first()
                 defaultEngineSettings().copy(
-                    proxy = p.proxy ?: "",
-                    userAgent = p.userAgent ?: "",
-                    cookiesFile = p.cookiesFileUri ?: "",
+                    proxy = NetworkSettings.normalizeProxy(p.proxy).orEmpty(),
+                    userAgent = NetworkSettings.normalizeUserAgent(p.userAgent).orEmpty(),
+                    // A cookies file that has gone missing would make yt-dlp error out; just don't pass it.
+                    cookiesFile = p.cookiesFileUri?.takeIf { File(it).isFile }.orEmpty(),
                 )
             },
+            speedLimit = { NetworkSettings.normalizeSpeedLimit(AppGraph.appSettings.flow.first().speedLimit) },
             outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "" },
             // The stored value is already in DataStore's memory (AppGraph.init read it), so this returns at once.
             initialPresetId = runCatching { runBlocking { AppGraph.appSettings.flow.first().defaultPresetId } }

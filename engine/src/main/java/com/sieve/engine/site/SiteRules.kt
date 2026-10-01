@@ -20,6 +20,13 @@ object SiteRules {
     private const val LINKEDIN_EMBED_PREFIX = "/embed/feed/update/"
     private const val FACEBOOK_PLAYER_PATH = "/plugins/video.php"
 
+    /** Port of the desktop's LOGIN_REQUIRED_RE: failures a cookies file could fix (sign-in, age gate, members-only...). */
+    private val LOGIN_REQUIRED = Regex(
+        """\bsign in\b|\blog ?in\b|\blogged[- ]in\b|registered users|confirm your age|confirm you.?re not a bot|""" +
+            """age[- ]restrict|private (?:video|account|post)|members[- ]only|empty media response|use --cookies|HTTP Error 401""",
+        RegexOption.IGNORE_CASE,
+    )
+
     private val VIMEO_WEB_CLIENT_ERROR = Regex("""web client only works when logged-in""", RegexOption.IGNORE_CASE)
 
     // The id is the LAST numeric path segment (album/showcase URLs carry another id first);
@@ -65,6 +72,9 @@ object SiteRules {
         }
         return trimmed
     }
+
+    /** True when a failure's yt-dlp `ERROR:` text says the site wants a login, so a cookies file is worth trying. */
+    fun looksLoginRequired(failure: String?): Boolean = LOGIN_REQUIRED.containsMatchIn(errorText(failure))
 
     /**
      * A second URL to try when a site rejects the first form. Vimeo login-walls its page URLs

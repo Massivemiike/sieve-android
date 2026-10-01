@@ -109,6 +109,55 @@ class YtDlpEngineImplAnalyzeTest {
         assertFalse((r as AnalyzeOutcome.Success).info.cookieFallback)
     }
 
+    // ---- cookies.txt: anonymous first, the file only when the site asks for a login ----
+    private val signIn = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users."
+
+    @Test fun cookiesFileIsNeverSentWhenTheAnonymousAnalyzeWorks() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(1, client.calls.size)
+        assertFalse("--cookies" in client.calls.single().options)
+    }
+
+    @Test fun aLoginWallRetriesOnceWithTheCookiesFile() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(2, client.calls.size)
+        assertFalse("--cookies" in client.calls[0].options)
+        val retry = client.calls[1].options
+        assertEquals("/data/cookies.txt", retry[retry.indexOf("--cookies") + 1])
+    }
+
+    @Test fun ifTheCookiesAlsoFailTheOriginalErrorWins() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), exited(1, "ERROR: cookies are stale"))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertTrue((r as AnalyzeOutcome.Failure).message.contains("Sign in"))
+        assertEquals(2, client.calls.size)
+    }
+
+    @Test fun aFailureThatIsNotALoginIsNotRetriedWithCookies() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, "ERROR: [generic] Unsupported URL: https://example.com/v"))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertEquals(1, client.calls.size)
+    }
+
+    @Test fun noCookiesFileMeansALoginWallIsJustAFailure() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn))))
+        val r = newEngine(client).analyze("https://example.com/v", null, null)
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertEquals(1, client.calls.size)
+    }
+
+    @Test fun aBlankCookiesFileIsTreatedAsNone() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn))))
+        newEngine(client).analyze("https://example.com/v", null, "  ")
+        assertEquals(1, client.calls.size)
+    }
+
     @Test fun analyzeOptionsAreFlatCappedUtf8AndKeepWarnings() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
         newEngine(client).analyze("https://example.com/v", null)

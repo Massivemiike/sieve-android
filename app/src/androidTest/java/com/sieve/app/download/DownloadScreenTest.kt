@@ -32,7 +32,7 @@ class DownloadScreenTest {
     val rule = createComposeRule()
 
     private class FakeEngine(val info: VideoInfo) : YtDlpEngine {
-        override suspend fun analyze(url: String, cookiesBrowser: String?) = AnalyzeOutcome.Success(info)
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?) = AnalyzeOutcome.Success(info)
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"

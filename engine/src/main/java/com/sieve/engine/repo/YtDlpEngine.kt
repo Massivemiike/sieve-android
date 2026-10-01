@@ -16,9 +16,13 @@ sealed interface AnalyzeOutcome {
  * terminating with exactly one of Completed/Failed/Cancelled. `cancel(id)` uses
  * the same processId the queue assigned; the id is stable across pause→resume→cancel.
  * checkUpdate compares against GitHub and NEVER applies; doUpdate applies via the library.
+ *
+ * `analyze`'s [cookiesFile] is a real, readable path to a Netscape cookies.txt. It is anonymous-first:
+ * the file is only tried (once) when the anonymous attempt fails because the site wants a login, so
+ * sites where cookies hurt (YouTube's degraded extractor, LinkedIn, Facebook) are never given them.
  */
 interface YtDlpEngine {
-    suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome
+    suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): AnalyzeOutcome
     fun download(id: String, url: String, args: List<String>): Flow<EngineEvent>
     fun cancel(id: String): Boolean
     suspend fun version(): String?

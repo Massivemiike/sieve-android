@@ -22,6 +22,7 @@ data class AppPrefs(
     val proxy: String? = null,
     val userAgent: String? = null,
     val speedLimit: String? = null,
+    /** Absolute path of the app-private cookies.txt copy (yt-dlp needs a real path, never a content:// Uri). */
     val cookiesFileUri: String? = null,
     val scheduleEnabled: Boolean = false,
     val scheduleStart: Int = 0, // minutes from midnight

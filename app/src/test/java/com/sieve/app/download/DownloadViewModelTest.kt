@@ -36,7 +36,12 @@ class DownloadViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     private class FakeEngine(var outcome: AnalyzeOutcome) : YtDlpEngine {
-        override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = outcome
+        /** The cookies file each analyze call was given. */
+        val analyzeCookies = mutableListOf<String?>()
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+            analyzeCookies += cookiesFile
+            return outcome
+        }
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"
@@ -167,6 +172,69 @@ class DownloadViewModelTest {
         val args = argsFor("archive")
         assertTrue(args.containsAll(listOf("--embed-subs", "--all-subs", "--embed-chapters", "--write-info-json", "--remux-video", "mkv")))
         assertEquals(1, args.count { it == "--embed-thumbnail" })
+    }
+
+    // ---- Settings network rows reach yt-dlp ----
+
+    private fun networkArgs(
+        settings: com.sieve.engine.args.EngineSettings,
+        speed: String?,
+        presetId: String = "audio-mp3",
+    ): List<String> {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(
+            FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = presetId,
+            engineSettings = { settings }, speedLimit = { speed },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.download()
+        dispatcher.scheduler.advanceUntilIdle()
+        return (sink.single().spec as JobSpec.Download).engineArgs
+    }
+
+    @Test fun speedLimitProxyUserAgentAndCookiesAllReachTheArgsInDesktopOrder() {
+        val args = networkArgs(
+            com.sieve.engine.args.EngineSettings(
+                concurrentFragments = 4, proxy = "socks5://127.0.0.1:1080", cookiesFile = "/data/user/0/app/files/cookies.txt",
+                userAgent = "Mozilla/5.0 Test",
+            ),
+            speed = "2M",
+        )
+        // ...extras, toggles, then speed -> fragments -> proxy -> cookies -> user agent (YtdlpArgs.build order)
+        val tail = args.subList(args.indexOf("--embed-thumbnail") + 1, args.size)
+        assertEquals(
+            listOf(
+                "--limit-rate", "2M", "-N", "4", "--proxy", "socks5://127.0.0.1:1080",
+                "--cookies", "/data/user/0/app/files/cookies.txt", "--user-agent", "Mozilla/5.0 Test",
+            ),
+            tail,
+        )
+    }
+
+    @Test fun noSpeedLimitMeansNoLimitRateFlag() {
+        assertTrue("--limit-rate" !in networkArgs(defaultEngineSettingsForTest(), speed = null))
+    }
+
+    private fun defaultEngineSettingsForTest() =
+        com.sieve.engine.args.EngineSettings(concurrentFragments = com.sieve.engine.args.EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS)
+
+    @Test fun analyzeHandsTheEngineTheCookiesFile() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(
+            engine, { }, idGen = { "id" },
+            engineSettings = { com.sieve.engine.args.EngineSettings(cookiesFile = "/files/cookies.txt") },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<String?>("/files/cookies.txt"), engine.analyzeCookies)
+    }
+
+    @Test fun analyzeSendsNoCookiesFileWhenNoneIsSet() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<String?>(null), engine.analyzeCookies)
     }
 
     // ---- default / last-used preset ----
