@@ -30,15 +30,19 @@ object EncoderResolver {
  * Unknown / `custom-*` ids return **trim-only** args (the desktop's early return); the `default`
  * ffmpeg case is unreachable because all 52 built-in ids have an explicit arm.
  *
- * Documented divergences from the (frozen) table: the DNxHR `-pix_fmt`/`-ar` fixes below; and the
- * Discord presets derive a video bitrate from the clip length (the desktop's `discordFitArgs`) —
- * budgeting the TRIMMED length, where the desktop budgets the whole source.
+ * Documented divergences from the (frozen) table: the DNxHR `-pix_fmt`/`-ar` fixes below; software
+ * H.264 gets `-pix_fmt yuv420p` ([withSoftwarePixFmt]); and the Discord presets derive a video
+ * bitrate from the clip length (the desktop's `discordFitArgs`) — budgeting the TRIMMED length, where
+ * the desktop budgets the whole source.
  */
 object FfmpegArgs {
 
     /** Share of the Discord size cap the encode targets; the rest is headroom for mux overhead. */
     private const val DISCORD_BUDGET = 0.92
     private const val DISCORD_MIN_VIDEO_BPS = 200_000L
+
+    /** Rate-control / speed tokens that sit directly after `-c:v <encoder>` in the arg tables. */
+    private val RATE_CONTROL_FLAGS = setOf("-crf", "-b:v", "-preset", "-maxrate", "-bufsize", "-fs")
 
     fun build(
         presetId: String,
@@ -132,7 +136,7 @@ object FfmpegArgs {
             else -> null
         }
 
-        if (body != null) out += body
+        if (body != null) out += if (encoder == BuilderEncoder.SOFTWARE) withSoftwarePixFmt(body) else body
         return out
     }
 
@@ -152,5 +156,23 @@ object FfmpegArgs {
         }
         args += listOf("-fs", "${capMB}M")
         return args
+    }
+
+    /**
+     * Pin software H.264 to 8-bit 4:2:0 (`-pix_fmt yuv420p`), as the desktop does for every CPU
+     * encode. Without it libx264 keeps the source's format, so a 10-bit HDR or 4:2:2 phone clip
+     * becomes High10/4:2:2 H.264 that iOS, most TVs and social uploads refuse to play.
+     *
+     * Inserted straight after the encoder's rate-control/`-preset` tokens (the desktop order); a no-op
+     * for any other codec or when the args already carry a `-pix_fmt`. Software only: MediaCodec
+     * encoders accept nv12/mediacodec frames, so HARDWARE args are left alone — except after a
+     * MediaCodec → libx264 demotion, which re-applies this.
+     */
+    fun withSoftwarePixFmt(args: List<String>): List<String> {
+        val c = args.indexOf("-c:v")
+        if (c < 0 || args.getOrNull(c + 1) != "libx264" || "-pix_fmt" in args) return args
+        var i = c + 2
+        while (i + 1 < args.size && args[i] in RATE_CONTROL_FLAGS) i += 2
+        return args.subList(0, i) + listOf("-pix_fmt", "yuv420p") + args.subList(i, args.size)
     }
 }
