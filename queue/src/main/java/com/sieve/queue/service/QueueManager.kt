@@ -293,11 +293,22 @@ class QueueManager(
         )
     }
 
+    /**
+     * The Pause/Cancel is already stamped on the row, so the job ends correctly whether or not the kill
+     * lands: a failure here is logged, never propagated — this runs in fire-and-forget app-scope
+     * launches, where an exception would take the whole process down.
+     */
     private suspend fun killJob(id: String) {
         val job = _state.value.job(id) ?: return
-        when (job.spec) {
-            is JobSpec.Download -> downloadPort.cancel(id)
-            is JobSpec.Transcode -> transcodePort.cancel(id, graceMs = 3000)
+        try {
+            when (job.spec) {
+                is JobSpec.Download -> downloadPort.cancel(id)
+                is JobSpec.Transcode -> transcodePort.cancel(id, graceMs = 3000)
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            android.util.Log.w("SieveQueue", "kill failed for $id", t)
         }
     }
 }

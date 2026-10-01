@@ -1,9 +1,10 @@
 package com.sieve.transcode.runner
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
 
 /**
  * Runs a [TranscodeJob] via a [FfmpegProcessFactory], turning the process's stdout/stderr into a
@@ -47,7 +48,13 @@ class FfmpegRunner(
                 }
             }
 
-            val code = process.awaitExit()
+            val code = try {
+                process.awaitExit()
+            } catch (e: CancellationException) {
+                // The collector went away (service teardown): don't leave ffmpeg running as an orphan.
+                process.destroyForcibly()
+                throw e
+            }
             outJob.join()
             errJob.join()
             val tailStr = tail.toString()
@@ -75,15 +82,29 @@ class FfmpegRunner(
         }
     }
 
-    /** Graceful cancel: ask ffmpeg to quit (`q`), then SIGTERM if it hasn't exited within [graceMs]. */
-    suspend fun cancel(process: FfmpegProcess, graceMs: Long = 2000) {
-        process.writeStdin("q")
-        val exited = withTimeoutOrNull(graceMs) { process.awaitExit() }
-        if (exited == null) process.destroy()
+    /**
+     * Graceful cancel, escalating: ask ffmpeg to quit (`q`); SIGTERM if it hasn't exited within [graceMs];
+     * SIGKILL if it still hasn't within [termGraceMs] (a wedged native MediaCodec call can ignore both).
+     * Every wait is the process's own TIMED wait, so the bounds hold even when ffmpeg is stuck.
+     *
+     * Safe on an already-exited process (output being saved, HW->SW retry gap): the closed stdin pipe
+     * makes the `q` write throw, which only means there is nothing left to ask.
+     */
+    suspend fun cancel(process: FfmpegProcess, graceMs: Long = 2000, termGraceMs: Long = TERM_GRACE_MS) {
+        try {
+            process.writeStdin("q")
+        } catch (_: IOException) {
+            // EPIPE / "Stream closed": the process is gone (or going) — fall through to the exit check.
+        }
+        if (process.awaitExit(graceMs)) return
+        process.destroy()
+        if (!process.awaitExit(termGraceMs)) process.destroyForcibly()
     }
 
     companion object {
         const val STDERR_MAX = 65536
+        /** How long SIGTERM gets before [cancel] escalates to SIGKILL. */
+        const val TERM_GRACE_MS = 2000L
         val ERROR_LINE = Regex("error|failed|invalid|cannot|unable|denied", RegexOption.IGNORE_CASE)
         private val ANSI = Regex("\\[[0-9;]*[A-Za-z]")
 
