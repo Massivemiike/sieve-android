@@ -133,6 +133,42 @@ class DownloadViewModelTest {
         assertEquals("", sink.first().title) // no analyzed info
     }
 
+    // ---- Windows download defaults: embed metadata + cover art, 4 parallel fragments ----
+
+    private fun argsFor(presetId: String): List<String> {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = presetId)
+        vm.onUrlChange("https://x/y")
+        vm.download()
+        dispatcher.scheduler.advanceUntilIdle()
+        return (sink.single().spec as JobSpec.Download).engineArgs
+    }
+
+    @Test fun everyPresetEmbedsMetadataAndCoverArtAndUsesFourFragments() {
+        for (p in DownloadPresets.ALL) {
+            val args = argsFor(p.id)
+            assertEquals(1, args.count { it == "--embed-metadata" }, p.id)
+            assertEquals(1, args.count { it == "--embed-thumbnail" }, p.id)
+            assertEquals("4", args[args.indexOf("-N") + 1], p.id)
+            assertTrue("--convert-thumbnails" !in args, p.id)
+        }
+    }
+
+    @Test fun anAudioPresetKeepsTheDesktopArgumentOrder() = assertEquals(
+        listOf(
+            "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+            "-x", "--audio-format", "mp3", "--audio-quality", "0",
+            "--embed-metadata", "--embed-thumbnail", "-N", "4",
+        ),
+        argsFor("audio-mp3"),
+    )
+
+    @Test fun theArchivePresetKeepsItsOwnExtrasAndAddsNoDuplicates() {
+        val args = argsFor("archive")
+        assertTrue(args.containsAll(listOf("--embed-subs", "--all-subs", "--embed-chapters", "--write-info-json", "--remux-video", "mkv")))
+        assertEquals(1, args.count { it == "--embed-thumbnail" })
+    }
+
     // ---- default / last-used preset ----
 
     private fun presetVm(start: String, remembered: MutableList<String> = mutableListOf()) = DownloadViewModel(

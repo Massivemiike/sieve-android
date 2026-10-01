@@ -36,6 +36,9 @@ data class DownloadUiState(
         ?.let { Regex("^\\w+://([^/]+)").find(it)?.groupValues?.get(1) }
 }
 
+/** Global yt-dlp settings with the desktop's defaults (4 parallel fragments); the caller layers user settings on top. */
+internal fun defaultEngineSettings() = EngineSettings(concurrentFragments = EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS)
+
 /**
  * Drives the Download screen. `enqueue`/`engineSettings`/`outputDirLabel` are injected so the model
  * is unit-testable without the Android graph; [from] wires the production instance.
@@ -43,7 +46,7 @@ data class DownloadUiState(
 class DownloadViewModel(
     private val engine: YtDlpEngine,
     private val enqueue: (QueueJob) -> Unit,
-    private val engineSettings: suspend () -> EngineSettings = { EngineSettings() },
+    private val engineSettings: suspend () -> EngineSettings = { defaultEngineSettings() },
     // Blank = the sink's own root (MediaStore: Download/Sieve). A non-blank value becomes a
     // SUBFOLDER under that root — passing "Download/Sieve" here created Download/Sieve/Download_Sieve.
     private val outputDirLabel: suspend () -> String = { "" },
@@ -98,6 +101,8 @@ class DownloadViewModel(
                 format = preset.format,
                 extraArgs = preset.extraArgs.ifEmpty { null },
                 audioOnly = preset.audioOnly,
+                // Embed metadata + cover art on every preset, as the desktop form does by default.
+                toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES,
             )
             val args = YtdlpArgs.build(opts, engineSettings())
             val job = QueueJob(
@@ -123,7 +128,7 @@ class DownloadViewModel(
             enqueue = { AppGraph.queue.enqueue(it) },
             engineSettings = {
                 val p = AppGraph.appSettings.flow.first()
-                EngineSettings(
+                defaultEngineSettings().copy(
                     proxy = p.proxy ?: "",
                     userAgent = p.userAgent ?: "",
                     cookiesFile = p.cookiesFileUri ?: "",

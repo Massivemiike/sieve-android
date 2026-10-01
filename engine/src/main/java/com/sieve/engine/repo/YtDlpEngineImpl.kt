@@ -238,6 +238,15 @@ class YtDlpEngineImpl(
                         runArgs = runArgs + CHECK_FORMATS
                         continue
                     }
+                    // Cover art embeds only into mp3/m4a/mp4/mkv/opus/flac. An AV1/VP9 + Opus merge is a .webm, and
+                    // there yt-dlp saves the media and THEN fails the whole run on the embed. Keep the saved file
+                    // and re-run once without the embed: yt-dlp sees the file already downloaded and only redoes
+                    // the post-processing, so the user gets the video instead of a failure.
+                    if (EMBED_THUMBNAIL in runArgs && THUMBNAIL_EMBED_FAILED.containsMatchIn(errs) && tried.add("embed-thumbnail")) {
+                        send(EngineEvent.Log("[retry] This format can't carry a cover image — retrying without it", null, false))
+                        runArgs = runArgs.filterNot { it == EMBED_THUMBNAIL }
+                        continue
+                    }
                 }
 
                 // Final failure: only the LAST attempt is reported — except when --check-formats found
@@ -299,6 +308,9 @@ class YtDlpEngineImpl(
         const val MAX_WARNINGS = 5
         const val SETTLED_URL_CAP = 1000
         const val CHECK_FORMATS = "--check-formats"
+        const val EMBED_THUMBNAIL = "--embed-thumbnail"
+        /** yt-dlp: `ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: ...` (or a cover conversion error). */
+        val THUMBNAIL_EMBED_FAILED = Regex("Postprocessing:.*thumbnail", RegexOption.IGNORE_CASE)
         val DRM_PROTECTED = Regex("DRM protected", RegexOption.IGNORE_CASE)
         val REQUESTED_FORMAT = Regex("Requested format is not available", RegexOption.IGNORE_CASE)
     }

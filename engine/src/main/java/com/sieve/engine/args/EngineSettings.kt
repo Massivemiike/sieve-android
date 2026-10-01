@@ -15,4 +15,9 @@ data class EngineSettings(
     val maxFilesize: String = "",
     val autoArchive: Boolean = false,
     val archiveFile: String = "",
-)
+) {
+    companion object {
+        /** The desktop's `concurrentFragments` default (appStore.ts); the builder itself treats 1 as "off". */
+        const val DEFAULT_CONCURRENT_FRAGMENTS = 4
+    }
+}

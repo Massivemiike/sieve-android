@@ -61,6 +61,7 @@ private class FakeClient(
 private const val VIMEO_PAGE = "https://vimeo.com/98044508"
 private const val VIMEO_PLAYER = "https://player.vimeo.com/video/98044508"
 private const val VIMEO_WALL = "ERROR: [vimeo] 98044508: The web client only works when logged-in. Use --cookies-from-browser or --cookies for the authentication."
+private const val EMBED_ERR = "ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov"
 private const val DRM_ERR = "WARNING: noise\nERROR: [vimeo] 98044508: This video is DRM protected"
 
 private fun ok(out: String, err: String = "") = Result.success(ExecResult(0, out, err))
@@ -329,6 +330,47 @@ class YtDlpEngineImplDownloadTest {
         val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
         assertEquals(EngineEvent.Completed(0), events.last())
         assertFalse(events.any { it is EngineEvent.Log && it.isError })
+    }
+
+    // webm (AV1/VP9 + Opus) can't carry a cover: the media is saved, then yt-dlp fails the run on the embed.
+    @Test fun aThumbnailEmbedFailureRetriesOnceWithoutTheEmbed() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + listOf("--embed-metadata", "--embed-thumbnail")).toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(1, client.calls[0].options.count { it == "--embed-thumbnail" })
+        assertFalse("--embed-thumbnail" in client.calls[1].options)
+        assertTrue("--embed-metadata" in client.calls[1].options) // only the cover is dropped
+        assertTrue(events.any { it is EngineEvent.Log && it.line.startsWith("[retry] This format can't carry a cover image") })
+        assertEquals(EngineEvent.Completed(0), events.last())
+        assertFalse(events.any { it is EngineEvent.Log && it.isError })
+    }
+
+    @Test fun theThrownPathAlsoRetriesWithoutTheEmbed() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(EngineEvent.Completed(0), events.last())
+    }
+
+    @Test fun theEmbedRetryRunsOnceAndThenReportsTheFailure() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR), exited(1, EMBED_ERR))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(listOf<EngineEvent>(EngineEvent.Log(EMBED_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
+    }
+
+    @Test fun noEmbedRetryWhenTheCoverWasNeverRequested() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(1, client.calls.size)
+        assertEquals(EngineEvent.Completed(1), events.last())
+    }
+
+    @Test fun otherPostprocessingFailuresDoNotTriggerTheEmbedRetry() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, "ERROR: Postprocessing: Conversion failed!"))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(1, client.calls.size)
+        assertEquals(EngineEvent.Completed(1), events.last())
     }
 
     @Test fun drmDoesNotRetryWhenCheckFormatsIsAlreadyPresent() = runTest {
