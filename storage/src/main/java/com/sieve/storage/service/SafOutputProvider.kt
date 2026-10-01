@@ -45,7 +45,11 @@ class SafOutputProvider(
         val leaves = fs.listLeafNames(prepared.workDir)
         val classified = ProducedFiles.classify(leaves)
             ?: throw IllegalStateException("job ${job.id} produced no real output files")
-        return publish(job, prepared, classified)
+        return publish(job, prepared, classified).also {
+            // Saved for good: a COMPLETED row is never retried, so its download archive has nothing left to do.
+            // Best-effort: a stray one-line file must not fail a finished save (Remove clears it with the row).
+            prepared.archivePath?.let { archive -> runCatching { if (fs.exists(archive)) fs.deleteRecursively(archive) } }
+        }
     }
 
     /** A failed run's finished media goes to the destination too; with none, nothing is touched (null). */

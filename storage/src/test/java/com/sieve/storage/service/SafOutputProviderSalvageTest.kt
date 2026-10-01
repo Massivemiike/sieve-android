@@ -119,6 +119,42 @@ class SafOutputProviderSalvageTest {
         assertTrue(fs.exists("/files/work/p7.archive.txt"))
     }
 
+    @Test fun `a successful finalize drops the archive - a completed row is never retried`() = runTest {
+        val fs = FakeWorkDirFs()
+        val p = providerWith(fs, FakeSink())
+        fs.putFile("/files/work", "p9.archive.txt", "youtube a1\n".toByteArray())
+        seed(fs, "p9", "Clip.mp4" to "CLIP")
+
+        assertNotNull(p.finalize(QueueJobFixtures.download("p9"), p.prepare(QueueJobFixtures.download("p9"))))
+
+        assertTrue(!fs.exists("/files/work/p9"))
+        assertTrue(!fs.exists("/files/work/p9.archive.txt"))
+    }
+
+    @Test fun `a finalize that fails keeps the archive for the Retry`() = runTest {
+        val fs = FakeWorkDirFs()
+        val p = providerWith(fs, FakeSink(failOnName = "Clip.mp4"))
+        fs.putFile("/files/work", "p10.archive.txt", "youtube a1\n".toByteArray())
+        seed(fs, "p10", "Clip.mp4" to "CLIP")
+
+        assertFailsWith<RuntimeException> { p.finalize(QueueJobFixtures.download("p10"), p.prepare(QueueJobFixtures.download("p10"))) }
+
+        assertTrue(fs.exists("/files/work/p10"))
+        assertTrue(fs.exists("/files/work/p10.archive.txt"))
+    }
+
+    @Test fun `a salvage keeps the archive - its row stays FAILED and its Retry needs it`() = runTest {
+        val fs = FakeWorkDirFs()
+        val p = providerWith(fs, FakeSink())
+        fs.putFile("/files/work", "p11.archive.txt", "youtube a1\n".toByteArray())
+        seed(fs, "p11", "Clip.mp4" to "CLIP")
+
+        assertNotNull(p.salvage(QueueJobFixtures.download("p11"), p.prepare(QueueJobFixtures.download("p11"))))
+
+        assertTrue(!fs.exists("/files/work/p11"))
+        assertTrue(fs.exists("/files/work/p11.archive.txt"))
+    }
+
     @Test fun `cleanup drops the archive together with the work dir`() = runTest {
         val fs = FakeWorkDirFs()
         val p = providerWith(fs, FakeSink())
