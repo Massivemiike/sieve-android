@@ -92,7 +92,11 @@ object AppGraph {
         // No ffmpegLocation: the youtubedl-android :ffmpeg companion (initialized in EngineInit)
         // provides ffmpeg to yt-dlp. Passing our own libsieveffmpeg.so via --ffmpeg-location makes
         // yt-dlp try to spawn it from its embedded Python, which deadlocks.
-        engine = YtDlpEngineImpl(YoutubeDLClientImpl(app), GithubReleaseApiImpl())
+        engine = YtDlpEngineImpl(
+            YoutubeDLClientImpl(app), GithubReleaseApiImpl(),
+            // Each yt-dlp run works on its own copy of cookies.txt (it rewrites the file it is given).
+            cookiesScratchDir = File(app.cacheDir, "cookies"),
+        )
 
         val db = Room.databaseBuilder(app, SieveDatabase::class.java, "sieve.db").build()
         val persistence = com.sieve.queue.persist.RoomQueuePersistence(db.queueDao())

@@ -81,6 +81,10 @@ object CookiesFile {
  * The app-private copy of the user's cookies.txt. yt-dlp needs a real path (a content:// Uri from the
  * picker is no use to a native process), so an import copies the picked file to `<dir>/cookies.txt`
  * and Settings stores THAT absolute path. IO is injected so this is plain-JVM testable.
+ *
+ * The file is read-only to yt-dlp in practice: yt-dlp rewrites the cookie file it is given, so every run
+ * (download or analyze) is handed a private per-run copy by `YtDlpEngineImpl`. That keeps this file's
+ * modified time at the import date the age chip reads, and keeps concurrent runs apart.
  */
 class CookiesStore(
     private val dir: File,

@@ -31,6 +31,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -46,6 +47,11 @@ class YtDlpEngineImpl(
     analyzeConcurrency: Int = 2,
     /** How long one analyze attempt may run before it is killed. Injectable so tests can use a tiny value. */
     private val analyzeTimeoutMs: Long = ANALYZE_TIMEOUT_MS,
+    /**
+     * Where each yt-dlp run's private copy of the cookies.txt lives (the app cache dir in production). Anything
+     * left in it belongs to a run of a dead process, so it is emptied when the engine is created.
+     */
+    private val cookiesScratchDir: File = File(System.getProperty("java.io.tmpdir") ?: ".", "sieve-cookies"),
 ) : YtDlpEngine {
 
     private val gate = Semaphore(analyzeConcurrency)
@@ -56,6 +62,12 @@ class YtDlpEngineImpl(
      * cancels its children, and a cancelled watchdog can no longer kill a process that is still running.
      */
     private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val cookieCopySeq = AtomicLong()
+
+    init {
+        runCatching { cookiesScratchDir.listFiles()?.forEach { it.delete() } }
+    }
 
     /**
      * An update replaces the yt-dlp files in place, so it must never overlap a yt-dlp run: runs hold
@@ -88,6 +100,39 @@ class YtDlpEngineImpl(
 
     /** The Network settings that apply to reading a link too, so it goes out the way the download will. */
     private class AnalyzeNet(val proxy: String?, val userAgent: String?)
+
+    /**
+     * Runs [block] with a private copy of the cookies.txt that [args] points at, and deletes the copy after.
+     * yt-dlp saves its cookie jar back to the file it was given when it exits, so handing it the user's own
+     * file would rewrite it on every run (the Settings age chip would always read "< 1 day old") and let
+     * concurrent runs read each other's half-written copy. Without a readable source file (or when it cannot
+     * be copied) the args go through unchanged and yt-dlp reports the real problem.
+     */
+    private inline fun <T> withPrivateCookies(args: List<String>, block: (List<String>) -> T): T {
+        val flagAt = args.indexOf("--cookies")
+        val source = if (flagAt >= 0 && flagAt + 1 < args.size) File(args[flagAt + 1]) else null
+        val copy = source?.takeIf { it.isFile }?.let { copyCookies(it) } ?: return block(args)
+        try {
+            return block(args.toMutableList().also { it[flagAt + 1] = copy.absolutePath })
+        } finally {
+            copy.delete()
+        }
+    }
+
+    private fun copyCookies(source: File): File? {
+        var copy: File? = null
+        return try {
+            cookiesScratchDir.mkdirs()
+            File.createTempFile("cookies-${cookieCopySeq.incrementAndGet()}-", ".txt", cookiesScratchDir).also {
+                copy = it
+                source.copyTo(it, overwrite = true)
+            }
+        } catch (e: IOException) {
+            android.util.Log.w("SieveDL", "couldn't copy the cookies file for this run: ${e.message}")
+            copy?.delete()
+            null
+        }
+    }
 
     /**
      * One analyze attempt; throws on non-zero exit, timeout or unparseable output. The library
@@ -125,7 +170,7 @@ class YtDlpEngineImpl(
                         runCatching { client.destroy(id) }
                     }
                     try {
-                        client.execute(id, url, opts) { _, _, _ -> }
+                        withPrivateCookies(opts) { client.execute(id, url, it) { _, _, _ -> } }
                     } finally {
                         watchdog.cancel()
                     }
@@ -241,14 +286,17 @@ class YtDlpEngineImpl(
                     val result = engineFiles.read {
                         // Cancelled while waiting for an update to finish: never start it.
                         if (cancelledIds.contains(id)) throw IllegalStateException("cancelled before start")
-                        client.execute(id, target, runArgs) { _, _, line ->
-                            for (ln in line.split("\n")) {
-                                if (ln.isBlank()) continue
-                                val progress = ProgressParser.parseProgress(ln)
-                                if (progress != null) {
-                                    trySend(EngineEvent.Progress(progress))
-                                } else {
-                                    trySend(EngineEvent.Log(LogRedactor.redact(ProgressParser.cleanLogLine(ln)), ProgressParser.parseFilePath(ln), false))
+                        // yt-dlp gets its own copy of the cookies.txt: it rewrites the file it is given.
+                        withPrivateCookies(runArgs) { runArgsForThisRun ->
+                            client.execute(id, target, runArgsForThisRun) { _, _, line ->
+                                for (ln in line.split("\n")) {
+                                    if (ln.isBlank()) continue
+                                    val progress = ProgressParser.parseProgress(ln)
+                                    if (progress != null) {
+                                        trySend(EngineEvent.Progress(progress))
+                                    } else {
+                                        trySend(EngineEvent.Log(LogRedactor.redact(ProgressParser.cleanLogLine(ln)), ProgressParser.parseFilePath(ln), false))
+                                    }
                                 }
                             }
                         }
