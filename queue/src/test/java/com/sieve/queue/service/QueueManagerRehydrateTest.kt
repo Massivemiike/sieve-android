@@ -87,6 +87,28 @@ class QueueManagerRehydrateTest {
         assertEquals(DownloadStatus.QUEUED, m.state.value.job("fresh")!!.status)
     }
 
+    @Test fun `a job enqueued before the load queues behind the restored work, not tied with it`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val inner = InMemoryPersistence().also {
+            it.upsert(row("old1", DownloadStatus.RUNNING, 1)); it.upsert(row("old2", DownloadStatus.QUEUED, 2))
+        }
+        val slow = object : QueuePersistence by inner {
+            override suspend fun loadAll(): List<QueueJob> { gate.await(); return inner.loadAll() }
+        }
+        val m = manager(slow)
+        val loading = backgroundScope.launch { m.rehydrate() }
+        runCurrent()
+
+        m.enqueue(row("fresh", DownloadStatus.QUEUED, 1)) // takes position 1 from the still-empty queue: ties with "old1"
+        gate.complete(Unit)
+        loading.join()
+
+        val order = listOf("old1", "old2", "fresh")
+        assertEquals(order, m.state.value.jobs.sortedBy { it.position }.map { it.id })
+        assertEquals(order, inner.loadAll().map { it.id }) // and the store agrees, so the next launch keeps it
+        assertEquals(order.indices.map { it.toLong() + 1 }, m.state.value.jobs.sortedBy { it.position }.map { it.position }) // no ties
+    }
+
     @Test fun `a job already running is not reverted or doubled by a late rehydrate`() = runTest {
         val persistence = InMemoryPersistence()
         val port = FakeDownloadPort { flow { emit(EngineEvent.Progress(com.sieve.engine.model.DownloadProgress(0.2f))); awaitCancellation() } }

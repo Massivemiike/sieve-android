@@ -150,7 +150,8 @@ class QueueManager(
      * Loads the persisted queue, ONCE per process (later calls are no-ops): finished rows come back as they
      * were, work the dead process left in flight (running / preparing / paused) comes back QUEUED, as on
      * desktop. It merges into the live state rather than replacing it, so a job enqueued — or already
-     * running — before the load finished is neither dropped nor reverted. A store that cannot be read
+     * running — before the load finished is neither dropped nor reverted (it queues behind the restored rows).
+     * A store that cannot be read
      * leaves the queue empty but still ends the load, so nothing waits on [rehydrated] forever.
      */
     suspend fun rehydrate() {
@@ -168,9 +169,14 @@ class QueueManager(
             val before = _state.value
             val fresh = loaded.filter { before.job(it.id) == null }
             val restored = QueueReducer.reduce(QueueState(jobs = fresh), QueueEvent.Rehydrate).jobs
-            _state.value = before.copy(jobs = before.jobs + restored)
+            // A job enqueued before the load took its position from the still-empty queue, so it ties with (or
+            // jumps ahead of) the older restored rows: queue it behind them, keeping its own order.
+            val floor = restored.maxOfOrNull { it.position }
+            val live = if (floor == null || before.jobs.all { it.position > floor }) before.jobs
+            else before.jobs.sortedBy { it.position }.mapIndexed { i, j -> j.copy(position = floor + 1 + i) }
+            _state.value = before.copy(jobs = live + restored)
             withContext(NonCancellable) {
-                val changed = restored.filter { r -> fresh.first { it.id == r.id } != r }
+                val changed = restored.filter { r -> fresh.first { it.id == r.id } != r } + live.filter { before.job(it.id) != it }
                 // Best-effort: the rows are already QUEUED in memory and persist with their next change.
                 if (changed.isNotEmpty()) runCatching { persistence.upsertAll(changed) }
                     .onFailure { android.util.Log.w("SieveQueue", "persisting the restored rows failed", it) }
