@@ -447,6 +447,24 @@ class YtDlpEngineImplDownloadTest {
         assertEquals(listOf<EngineEvent>(EngineEvent.Log(DRM_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
     }
 
+    // The text of a run lands in logcat and in the queue row's log: a proxy password must not travel with it.
+    private val proxyEcho = "ERROR: Unable to connect to proxy socks5://alice:s3cret@10.0.0.2:1080 (Connection refused)"
+
+    @Test fun aFailureTextNeverCarriesProxyCredentials() = runTest {
+        for (failure in listOf(exited(1, proxyEcho), threw(proxyEcho))) {
+            val client = FakeClient(execResults = ArrayDeque(listOf(failure)))
+            val events = newEngine(client).download("id1", "https://example.com/v", args + listOf("--proxy", "socks5://alice:s3cret@10.0.0.2:1080")).toList()
+            val errorLog = events.filterIsInstance<EngineEvent.Log>().single { it.isError }
+            assertEquals("ERROR: Unable to connect to proxy socks5://***@10.0.0.2:1080 (Connection refused)", errorLog.line)
+        }
+    }
+
+    @Test fun progressOutputNeverCarriesProxyCredentials() = runTest {
+        val client = FakeClient(execLines = listOf("[generic] Using proxy socks5://alice:s3cret@10.0.0.2:1080"))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(listOf("[generic] Using proxy socks5://***@10.0.0.2:1080"), events.filterIsInstance<EngineEvent.Log>().map { it.line })
+    }
+
     @Test fun otherFailureEmitsErrorLogAndCompleted1WithoutRetry() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(threw("ERROR: [youtube] abc: Video unavailable"))))
         val events = newEngine(client).download("id1", "https://example.com/v", args).toList()

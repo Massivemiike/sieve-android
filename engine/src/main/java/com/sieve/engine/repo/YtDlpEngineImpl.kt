@@ -4,6 +4,7 @@ import com.sieve.engine.model.VideoInfo
 import com.sieve.engine.parse.AnalyzeError
 import com.sieve.engine.parse.AnalyzeException
 import com.sieve.engine.parse.AnalyzeParser
+import com.sieve.engine.parse.LogRedactor
 import com.sieve.engine.parse.ProgressParser
 import com.sieve.engine.parse.StoryboardDetector
 import com.sieve.engine.site.SiteRules
@@ -180,7 +181,8 @@ class YtDlpEngineImpl(
     override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = channelFlow {
         cancelledIds.remove(id)
         ensureOutputDir(args)
-        android.util.Log.i("SieveDL", "download start id=$id args=$args")
+        // The args can hold a proxy password or auth headers: logcat ends up in bug reports.
+        android.util.Log.i("SieveDL", "download start id=$id args=${LogRedactor.redactArgs(args)}")
         withContext(io) {
             // First attempt: the URL form analyze settled on, else the deterministic normalization.
             var target = settledUrls[url] ?: settledUrls[url.trim()] ?: SiteRules.normalizeUrl(url)
@@ -205,7 +207,7 @@ class YtDlpEngineImpl(
                                 if (progress != null) {
                                     trySend(EngineEvent.Progress(progress))
                                 } else {
-                                    trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+                                    trySend(EngineEvent.Log(LogRedactor.redact(ProgressParser.cleanLogLine(ln)), ProgressParser.parseFilePath(ln), false))
                                 }
                             }
                         }
@@ -213,7 +215,10 @@ class YtDlpEngineImpl(
                     exitCode = result.exitCode
                     stderr = result.err
                     if (exitCode != 0) {
-                        android.util.Log.e("SieveDL", "EXIT=$exitCode\nSTDERR:\n${result.err.takeLast(4000)}\nSTDOUT:\n${result.out.takeLast(1500)}")
+                        android.util.Log.e(
+                            "SieveDL",
+                            "EXIT=$exitCode\nSTDERR:\n${LogRedactor.redact(result.err.takeLast(4000))}\nSTDOUT:\n${LogRedactor.redact(result.out.takeLast(1500))}",
+                        )
                     }
                 } catch (e: CancellationException) {
                     send(EngineEvent.Cancelled)
@@ -270,13 +275,13 @@ class YtDlpEngineImpl(
                 // the DRM error that started the retry is the one to show.
                 val drmOnly = drmStderr?.takeIf { REQUESTED_FORMAT.containsMatchIn(SiteRules.errorText(stderr)) }
                 if (thrown != null) {
-                    android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)}")
-                    send(EngineEvent.Log(drmOnly ?: thrown.message ?: "download failed", null, true))
+                    android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)?.let(LogRedactor::redact)}")
+                    send(EngineEvent.Log(LogRedactor.redact(drmOnly ?: thrown.message ?: "download failed"), null, true))
                     send(EngineEvent.Completed(1))
                 } else {
                     // Same contract as the thrown path: the failure's text travels as an error Log so
                     // the queue can show and classify the real cause, not just the exit code.
-                    val text = drmOnly ?: stderr
+                    val text = LogRedactor.redact(drmOnly ?: stderr)
                     if (text.isNotBlank()) send(EngineEvent.Log(text, null, true))
                     send(EngineEvent.Completed(exitCode))
                 }
