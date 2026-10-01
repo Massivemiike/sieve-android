@@ -3,8 +3,12 @@ package com.sieve.engine.repo
 import com.sieve.engine.update.GithubReleaseApi
 import com.sieve.engine.update.UpdateResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -256,6 +260,17 @@ class YtDlpEngineImplAnalyzeTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
         newEngine(client, timeoutMs = 60_000).analyze("https://example.com/v", null)
         assertTrue(client.destroyed.isEmpty())
+    }
+
+    // execute() blocks and ignores coroutine cancellation: a caller that goes away (the screen is closed)
+    // must still get the process killed, or it keeps running and holds one of the analyze permits.
+    @Test fun cancellingTheCallerKillsAHungAnalyze() = runBlocking {
+        val client = FakeClient(blockUntilDestroyed = true)
+        val job = launch(Dispatchers.Default) { newEngine(client).analyze("https://example.com/slow", null) }
+        withTimeout(5_000) { while (client.calls.isEmpty()) delay(10) }
+        job.cancel()
+        withTimeout(5_000) { job.join() }
+        assertEquals(client.calls.map { it.id }, client.destroyed.toList())
     }
 
     @Test fun downloadStartsFromTheUrlFormAnalyzeSettledOn() = runTest {

@@ -15,10 +15,14 @@ import com.sieve.engine.update.UpdateResult
 import com.sieve.engine.update.VersionCompare
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
@@ -46,6 +50,12 @@ class YtDlpEngineImpl(
 
     private val gate = Semaphore(analyzeConcurrency)
     private val cancelledIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Owns the analyze watchdogs. They must not be children of the caller's scope: a caller that goes away
+     * cancels its children, and a cancelled watchdog can no longer kill a process that is still running.
+     */
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
      * An update replaces the yt-dlp files in place, so it must never overlap a yt-dlp run: runs hold
@@ -80,7 +90,9 @@ class YtDlpEngineImpl(
      * One analyze attempt; throws on non-zero exit, timeout or unparseable output. The library
      * throws on any non-zero exit (message = full stderr), so both a thrown failure and an
      * `exitCode != 0` result are handled. `client.execute` blocks, so the timeout is a watchdog
-     * that kills the process by id rather than a coroutine `withTimeout`.
+     * that kills the process by id rather than a coroutine `withTimeout`. The watchdog is armed only
+     * once the engine lock is held (the wait behind an update is not the site's fault), and a caller
+     * that gives up kills the process too, so it can't keep running and hold an analyze permit.
      */
     private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): VideoInfo = coroutineScope {
         val id = "analyze-${analyzeSeq.incrementAndGet()}"
@@ -91,14 +103,28 @@ class YtDlpEngineImpl(
             if (!cookiesFile.isNullOrBlank()) { add("--cookies"); add(cookiesFile) }
         }
         val timedOut = AtomicBoolean(false)
-        val watchdog = launch(Dispatchers.Default) {
-            delay(analyzeTimeoutMs)
-            timedOut.set(true)
-            runCatching { client.destroy(id) }
+        val finished = AtomicBoolean(false)
+        // execute() ignores coroutine cancellation: when the caller is cancelled this child is cancelled with it
+        // and is the only thing still able to stop the process.
+        val callerGone = launch(Dispatchers.Default) {
+            try { awaitCancellation() } finally { if (!finished.get()) runCatching { client.destroy(id) } }
         }
         try {
             val res = try {
-                engineFiles.read { client.execute(id, url, opts) { _, _, _ -> } }
+                engineFiles.read {
+                    // Gave up while waiting for an update to finish: never start it.
+                    ensureActive()
+                    val watchdog = watchdogScope.launch {
+                        delay(analyzeTimeoutMs)
+                        timedOut.set(true)
+                        runCatching { client.destroy(id) }
+                    }
+                    try {
+                        client.execute(id, url, opts) { _, _, _ -> }
+                    } finally {
+                        watchdog.cancel()
+                    }
+                }
             } catch (e: Exception) {
                 if (timedOut.get()) throw AnalyzeException(ANALYZE_TIMEOUT_MESSAGE, e)
                 throw e
@@ -111,7 +137,8 @@ class YtDlpEngineImpl(
             val warnings = res.err.lines().filter { it.trimStart().startsWith("WARNING:") }.take(MAX_WARNINGS)
             if (warnings.isEmpty()) info else info.copy(warnings = warnings)
         } finally {
-            watchdog.cancel()
+            finished.set(true)
+            callerGone.cancel()
         }
     }
 

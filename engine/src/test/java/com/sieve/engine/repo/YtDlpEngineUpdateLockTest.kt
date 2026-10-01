@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -27,16 +28,32 @@ class YtDlpEngineUpdateLockTest {
         val releaseUpdate = CountDownLatch(1)
         var blockExec = false
         var blockUpdate = false
+        @Volatile private var execRunning = false
+        @Volatile private var killed = false
+        /** What execute() reports; the default is a successful empty run. */
+        var execExit = 0
+        var execOut = "{}"
+        var execErr = ""
 
         override fun version(): String? = "2026.08.19"
         override fun execute(processId: String, url: String, options: List<String>, onProgress: (Float, Long, String) -> Unit): ExecResult {
             log.add("exec-start")
+            execRunning = true
             execEntered.countDown()
             if (blockExec) releaseExec.await(10, TimeUnit.SECONDS)
+            execRunning = false
             log.add("exec-end")
-            return ExecResult(0, "{}", "")
+            // The library throws when its process was destroyed.
+            if (killed) throw RuntimeException("Command was canceled")
+            return ExecResult(execExit, execOut, execErr)
         }
-        override fun destroy(processId: String): Boolean = true
+        // Killing a process ends a hung execute(), like the library's destroyProcessById.
+        override fun destroy(processId: String): Boolean {
+            log.add("destroy")
+            if (execRunning) killed = true
+            releaseExec.countDown()
+            return true
+        }
         override fun update(nightly: Boolean): String {
             log.add("update-start")
             updateEntered.countDown()
@@ -85,5 +102,38 @@ class YtDlpEngineUpdateLockTest {
         val events = withTimeout(5_000) { up.await(); dl.await() }
         assertTrue("exec-start" !in client.log, "a cancelled download still ran yt-dlp")
         assertEquals(EngineEvent.Cancelled, events.last())
+    }
+
+    // ---- analyze: the timeout measures the yt-dlp run, not the wait for an update to finish ----
+
+    private val unsupported = "ERROR: [generic] Unsupported URL: https://example.com/v"
+
+    @Test fun analyzeIsNotChargedForTheTimeItWaitedOnAnUpdate() = runBlocking {
+        val client = GatedClient().apply { blockUpdate = true; execExit = 1; execErr = unsupported }
+        val engine = YtDlpEngineImpl(client, github, Dispatchers.IO, analyzeTimeoutMs = 150)
+        val up = async(Dispatchers.IO) { engine.doUpdate(UpdateChannel.STABLE) }
+        assertTrue(client.updateEntered.await(5, TimeUnit.SECONDS))
+        val analysis = async(Dispatchers.IO) { engine.analyze("https://example.com/v", null) }
+        Thread.sleep(500) // well past the timeout, and still queued behind the update
+        client.releaseUpdate.countDown()
+        val outcome = withTimeout(5_000) { up.await(); analysis.await() }
+        // The real error, not "Timed out while reading this link".
+        assertTrue(outcome is AnalyzeOutcome.Failure)
+        assertFalse((outcome as AnalyzeOutcome.Failure).message.startsWith("Timed out"), outcome.message)
+        assertEquals(listOf("update-start", "update-end", "exec-start", "exec-end"), client.log.toList())
+    }
+
+    @Test fun aHungAnalyzeThatStartedAfterTheUpdateIsStillKilled() = runBlocking {
+        val client = GatedClient().apply { blockUpdate = true; blockExec = true }
+        val engine = YtDlpEngineImpl(client, github, Dispatchers.IO, analyzeTimeoutMs = 150)
+        val up = async(Dispatchers.IO) { engine.doUpdate(UpdateChannel.STABLE) }
+        assertTrue(client.updateEntered.await(5, TimeUnit.SECONDS))
+        val analysis = async(Dispatchers.IO) { engine.analyze("https://example.com/v", null) }
+        Thread.sleep(500)
+        client.releaseUpdate.countDown()
+        val outcome = withTimeout(5_000) { up.await(); analysis.await() }
+        assertTrue(outcome is AnalyzeOutcome.Failure && outcome.message.startsWith("Timed out"))
+        // The watchdog only started once yt-dlp did: the kill comes after exec-start, never during the wait.
+        assertEquals(listOf("update-start", "update-end", "exec-start", "destroy", "exec-end"), client.log.toList())
     }
 }
