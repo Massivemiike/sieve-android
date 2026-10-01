@@ -19,6 +19,9 @@ data class DownloadPreset(
 )
 
 object DownloadPresets {
+    /** What a fresh install starts on (the first preset). */
+    const val DEFAULT_ID = "best-video"
+
     val ALL: List<DownloadPreset> = listOf(
         DownloadPreset(
             "best-video", "Best video + audio", "Highest quality available",

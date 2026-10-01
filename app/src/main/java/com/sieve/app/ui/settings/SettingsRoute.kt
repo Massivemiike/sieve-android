@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,19 +22,27 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,11 +51,17 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.sieve.app.ui.common.ChipKind
 import com.sieve.app.ui.common.SectionLabel
 import com.sieve.app.ui.common.SieveChip
+import com.sieve.app.ui.common.rememberOpenDocument
 import com.sieve.app.ui.common.rememberOpenDocumentTree
+import com.sieve.app.settings.CookieAge
+import com.sieve.app.settings.CookiesFile
+import com.sieve.app.settings.CookiesInfo
+import com.sieve.app.settings.NetworkSettings
 import com.sieve.app.ui.download.DownloadPresets
 import com.sieve.app.ui.theme.AccentSwatches
 import com.sieve.app.ui.theme.ThemeMode
 import com.sieve.app.ui.theme.accentFromHex
+import com.sieve.queue.core.QueueLimits
 
 @Composable
 fun SettingsRoute(
@@ -55,8 +70,30 @@ fun SettingsRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val grant = rememberOpenDocumentTree { uri -> vm.setOutputTree(uri.toString()) }
-    SettingsScreen(state, grant, vm::setThemeMode, vm::setAccent, vm::setDefaultPreset, vm::setMaxDownloads, vm::setMaxTranscodes, vm::updateEngine, vm::reset, onOpenAbout, updatesSlot = { com.sieve.app.update.UpdatesSection() })
+    // "*/*": file managers label a cookies.txt text/plain, octet-stream or nothing at all; import validates the content.
+    val pickCookies = rememberOpenDocument(arrayOf("*/*")) { uri -> vm.importCookies(uri.toString()) }
+    SettingsScreen(
+        state, grant, vm::setThemeMode, vm::setAccent, vm::setDefaultPreset, vm::setMaxDownloads, vm::setMaxTranscodes,
+        vm::updateEngine, vm::reset, onOpenAbout,
+        updatesSlot = { com.sieve.app.update.UpdatesSection() },
+        network = NetworkActions(
+            onProxy = vm::setProxy, onUserAgent = vm::setUserAgent, onSpeedLimit = vm::setSpeedLimit,
+            onPickCookies = pickCookies, onRemoveCookies = vm::removeCookies, onDismissCookiesMessage = vm::dismissCookiesMessage,
+        ),
+    )
 }
+
+/** What the Network rows can do; the defaults keep previews and tests that don't care compiling. */
+data class NetworkActions(
+    val onProxy: (String?) -> Unit = {},
+    val onUserAgent: (String?) -> Unit = {},
+    val onSpeedLimit: (String?) -> Unit = {},
+    val onPickCookies: () -> Unit = {},
+    val onRemoveCookies: () -> Unit = {},
+    val onDismissCookiesMessage: () -> Unit = {},
+)
+
+private enum class NetField { PROXY, USER_AGENT, SPEED }
 
 @Composable
 fun SettingsScreen(
@@ -71,7 +108,9 @@ fun SettingsScreen(
     onReset: () -> Unit,
     onOpenAbout: () -> Unit,
     updatesSlot: @Composable () -> Unit = {},
+    network: NetworkActions = NetworkActions(),
 ) {
+    var editing by remember { mutableStateOf<NetField?>(null) }
     Scaffold(topBar = {
         Text("Settings", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
     }) { padding ->
@@ -117,14 +156,27 @@ fun SettingsScreen(
             item { SectionLabel("Downloads") }
             item {
                 Group {
-                    RowStepper("Max downloads", state.app.maxDownloads, 1, 10, onMaxDownloads, "maxdl")
+                    RowStepper("Max downloads", state.app.maxDownloads, QueueLimits.DOWNLOADS.first, QueueLimits.DOWNLOADS.last, onMaxDownloads, "maxdl")
                     Divider()
                     RowItem("Default format", DownloadPresets.byId(state.app.defaultPresetId).label)
                 }
             }
 
+            item { SectionLabel("Network") }
+            item {
+                Group {
+                    EditRow("Proxy", state.app.proxy, "Not set", "proxy_row") { editing = NetField.PROXY }
+                    Divider()
+                    EditRow("User-agent", state.app.userAgent, "Default", "ua_row") { editing = NetField.USER_AGENT }
+                    Divider()
+                    EditRow("Speed limit", state.app.speedLimit?.let { "$it/s" }, "Unlimited", "speed_row") { editing = NetField.SPEED }
+                    Divider()
+                    CookiesRow(state.cookies, state.cookiesMessage, network)
+                }
+            }
+
             item { SectionLabel("Transcode") }
-            item { Group { RowStepper("Max transcodes", state.app.maxTranscodes, 1, 4, onMaxTranscodes, "maxtx") } }
+            item { Group { RowStepper("Max transcodes", state.app.maxTranscodes, QueueLimits.TRANSCODES.first, QueueLimits.TRANSCODES.last, onMaxTranscodes, "maxtx") } }
 
             item { SectionLabel("Engine") }
             item {
@@ -157,6 +209,120 @@ fun SettingsScreen(
                     Text("Reset settings")
                 }
             }
+        }
+    }
+
+    when (editing) {
+        NetField.PROXY -> TextEditDialog(
+            "Proxy", "Applies to new downloads. Empty = direct connection.", "socks5://127.0.0.1:1080",
+            state.app.proxy.orEmpty(), NetworkSettings::proxyError, network.onProxy, onDismiss = { editing = null },
+        )
+        NetField.USER_AGENT -> TextEditDialog(
+            "User-agent", "Applies to new downloads. Empty = yt-dlp default.", "(default)",
+            state.app.userAgent.orEmpty(), NetworkSettings::userAgentError, network.onUserAgent, onDismiss = { editing = null },
+        )
+        NetField.SPEED -> TextEditDialog(
+            "Speed limit", "Per download, e.g. 2M or 500K. Empty = unlimited.", "0 (unlimited)",
+            state.app.speedLimit.orEmpty(), NetworkSettings::speedLimitError, network.onSpeedLimit, onDismiss = { editing = null },
+        )
+        null -> Unit
+    }
+}
+
+/** A label with its current value; tapping opens the editor. Long values (a user-agent) ellipsize. */
+@Composable
+private fun EditRow(label: String, value: String?, empty: String, tag: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).testTag(tag).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            value ?: empty, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End, modifier = Modifier.weight(1f),
+        )
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.outline)
+    }
+}
+
+/** Edits one text setting. Save is only enabled for acceptable text; blank clears the setting. */
+@Composable
+private fun TextEditDialog(
+    title: String,
+    hint: String,
+    placeholder: String,
+    initial: String,
+    validate: (String) -> String?,
+    onSave: (String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    val error = validate(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = text, onValueChange = { text = it }, singleLine = true, isError = error != null,
+                placeholder = { Text(placeholder) },
+                supportingText = { Text(error ?: hint) },
+                modifier = Modifier.fillMaxWidth().testTag("edit_field"),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(text.trim().ifEmpty { null }); onDismiss() }, enabled = error == null, modifier = Modifier.testTag("edit_save")) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            Row {
+                if (initial.isNotBlank()) TextButton(onClick = { onSave(null); onDismiss() }, modifier = Modifier.testTag("edit_clear")) { Text("Clear") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
+/** Import / replace / remove the cookies.txt, with the desktop's staleness warning. */
+@Composable
+private fun CookiesRow(info: CookiesInfo?, message: String?, network: NetworkActions) {
+    val cs = MaterialTheme.colorScheme
+    val ageDays = remember(info) { info?.ageDays(System.currentTimeMillis()) }
+    val stale = ageDays != null && CookieAge.of(ageDays) != CookieAge.FRESH
+    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Cookies file", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    info?.let { CookiesFile.statusLine(it) } ?: "Not set",
+                    style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, modifier = Modifier.testTag("cookies_status"),
+                )
+            }
+            OutlinedButton(onClick = network.onPickCookies, modifier = Modifier.testTag("cookies_import")) {
+                Text(if (info == null) "Import" else "Replace")
+            }
+            if (info != null) {
+                TextButton(onClick = network.onRemoveCookies, modifier = Modifier.testTag("cookies_remove")) { Text("Remove") }
+            }
+        }
+        if (info == null) {
+            Text(
+                "Netscape cookies.txt for age-restricted or login-only videos. Applies to new downloads.",
+                style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant,
+            )
+        }
+        if (ageDays != null) {
+            Text(
+                CookiesFile.ageLabel(ageDays), style = MaterialTheme.typography.labelSmall,
+                color = if (stale) cs.error else cs.onSurfaceVariant, modifier = Modifier.testTag("cookies_age"),
+            )
+            CookiesFile.warning(ageDays)?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = cs.error, modifier = Modifier.testTag("cookies_warning"))
+            }
+        }
+        if (message != null) {
+            Text(
+                message, style = MaterialTheme.typography.labelSmall, color = cs.error,
+                modifier = Modifier.clickable(onClick = network.onDismissCookiesMessage).testTag("cookies_message"),
+            )
         }
     }
 }

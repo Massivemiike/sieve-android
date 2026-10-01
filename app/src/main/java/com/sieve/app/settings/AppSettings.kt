@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.sieve.app.ui.theme.ThemeMode
+import com.sieve.queue.core.QueueLimits
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -21,6 +22,7 @@ data class AppPrefs(
     val proxy: String? = null,
     val userAgent: String? = null,
     val speedLimit: String? = null,
+    /** Absolute path of the app-private cookies.txt copy (yt-dlp needs a real path, never a content:// Uri). */
     val cookiesFileUri: String? = null,
     val scheduleEnabled: Boolean = false,
     val scheduleStart: Int = 0, // minutes from midnight
@@ -51,8 +53,8 @@ class AppSettings(private val dataStore: DataStore<Preferences>) {
             themeMode = p[K.THEME]?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.DARK,
             accentHex = p[K.ACCENT] ?: AppPrefs.DEFAULT_ACCENT,
             defaultPresetId = p[K.PRESET] ?: "best-video",
-            maxDownloads = p[K.MAXD] ?: 3,
-            maxTranscodes = p[K.MAXT] ?: 1,
+            maxDownloads = (p[K.MAXD] ?: 3).coerceIn(QueueLimits.DOWNLOADS),
+            maxTranscodes = (p[K.MAXT] ?: 1).coerceIn(QueueLimits.TRANSCODES),
             proxy = p[K.PROXY],
             userAgent = p[K.UA],
             speedLimit = p[K.SPEED],
@@ -66,8 +68,8 @@ class AppSettings(private val dataStore: DataStore<Preferences>) {
     suspend fun setThemeMode(mode: ThemeMode) = dataStore.edit { it[K.THEME] = mode.name }
     suspend fun setAccentHex(hex: String) = dataStore.edit { it[K.ACCENT] = hex }
     suspend fun setDefaultPreset(id: String) = dataStore.edit { it[K.PRESET] = id }
-    suspend fun setMaxDownloads(n: Int) = dataStore.edit { it[K.MAXD] = n.coerceIn(1, 10) }
-    suspend fun setMaxTranscodes(n: Int) = dataStore.edit { it[K.MAXT] = n.coerceIn(1, 4) }
+    suspend fun setMaxDownloads(n: Int) = dataStore.edit { it[K.MAXD] = n.coerceIn(QueueLimits.DOWNLOADS) }
+    suspend fun setMaxTranscodes(n: Int) = dataStore.edit { it[K.MAXT] = n.coerceIn(QueueLimits.TRANSCODES) }
     suspend fun setProxy(v: String?) = editNullable(K.PROXY, v)
     suspend fun setUserAgent(v: String?) = editNullable(K.UA, v)
     suspend fun setSpeedLimit(v: String?) = editNullable(K.SPEED, v)

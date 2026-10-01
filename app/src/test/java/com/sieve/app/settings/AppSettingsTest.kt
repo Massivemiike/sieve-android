@@ -3,6 +3,8 @@ package com.sieve.app.settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import com.sieve.app.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -62,6 +64,16 @@ class AppSettingsTest {
         val r = s.flow.first()
         assertEquals(10, r.maxDownloads)
         assertNull(r.proxy)
+        Unit
+    }
+
+    @Test
+    fun readsClampStoredCapsIntoTheStepperRange() = runBlocking {
+        val ds = store()
+        ds.edit { it[intPreferencesKey("max_downloads")] = 99; it[intPreferencesKey("max_transcodes")] = 0 }
+        val r = AppSettings(ds).flow.first()
+        assertEquals(10, r.maxDownloads)
+        assertEquals(1, r.maxTranscodes)
         Unit
     }
 }

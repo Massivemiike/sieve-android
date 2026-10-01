@@ -11,7 +11,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.Icon
 import com.sieve.app.ui.common.rememberAppSnackbarHost
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -85,6 +87,18 @@ fun SieveNavHost() {
             }
             composable(ROUTE_ABOUT) {
                 com.sieve.app.ui.settings.AboutRoute()
+            }
+        }
+        // After the NavHost so the graph is set; a notification tap asks for a screen from outside the UI.
+        val requested by NavRequests.route.collectAsStateWithLifecycle()
+        LaunchedEffect(requested) {
+            requested?.let { route ->
+                navController.navigate(route) {
+                    launchSingleTop = true
+                    restoreState = true
+                    popUpTo(navController.graph.findStartDestination().id) { saveState = true }
+                }
+                NavRequests.consume()
             }
         }
     }

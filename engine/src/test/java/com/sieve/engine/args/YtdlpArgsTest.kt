@@ -26,6 +26,40 @@ class YtdlpArgsTest {
         YtdlpArgs.build(DownloadArgsOptions(format = ""), s),
     )
 
+    @Test fun defaultTogglesAreTheDesktopFormDefaultsInOrder() {
+        assertEquals(listOf("--embed-metadata", "--embed-thumbnail"), DownloadArgsOptions.DEFAULT_TOGGLES.keys.toList())
+        assertTrue(DownloadArgsOptions.DEFAULT_TOGGLES.values.all { it == ToggleValue.On })
+        assertEquals(4, EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS)
+    }
+
+    @Test fun defaultTogglesLandAfterPresetExtrasAndBeforeSpeedAndFragments() = assertEquals(
+        listOf(
+            "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+            "-x", "--audio-format", "mp3",                       // preset extras
+            "--embed-metadata", "--embed-thumbnail",            // toggles
+            "--limit-rate", "2M", "-N", "4",                     // speed limit, then fragments
+        ),
+        YtdlpArgs.build(
+            DownloadArgsOptions(
+                format = "bestaudio/best", extraArgs = listOf("-x", "--audio-format", "mp3"),
+                toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES, audioOnly = true, speedLimit = "2M",
+            ),
+            EngineSettings(concurrentFragments = EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS),
+        ),
+    )
+
+    @Test fun defaultTogglesNeverDuplicateAFlagAPresetAlreadyCarries() {
+        val out = YtdlpArgs.build(
+            DownloadArgsOptions(
+                format = "best", extraArgs = listOf("--embed-thumbnail", "--embed-subs"),
+                toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES,
+            ), s,
+        )
+        assertEquals(1, out.count { it == "--embed-thumbnail" })
+        assertEquals(1, out.count { it == "--embed-metadata" })
+        assertFalse(out.contains("--convert-thumbnails")) // the desktop doesn't pair one
+    }
+
     @Test fun t10OnToggleDedupVsExtras() {
         val out = YtdlpArgs.build(
             DownloadArgsOptions(

@@ -61,6 +61,7 @@ private class FakeClient(
 private const val VIMEO_PAGE = "https://vimeo.com/98044508"
 private const val VIMEO_PLAYER = "https://player.vimeo.com/video/98044508"
 private const val VIMEO_WALL = "ERROR: [vimeo] 98044508: The web client only works when logged-in. Use --cookies-from-browser or --cookies for the authentication."
+private const val EMBED_ERR = "ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: mp3, mkv/mka, ogg/opus/flac, m4a/mp4/m4v/mov"
 private const val DRM_ERR = "WARNING: noise\nERROR: [vimeo] 98044508: This video is DRM protected"
 
 private fun ok(out: String, err: String = "") = Result.success(ExecResult(0, out, err))
@@ -106,6 +107,55 @@ class YtDlpEngineImplAnalyzeTest {
         val r = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined).analyze("u", "chrome")
         assertTrue(r is AnalyzeOutcome.Success)
         assertFalse((r as AnalyzeOutcome.Success).info.cookieFallback)
+    }
+
+    // ---- cookies.txt: anonymous first, the file only when the site asks for a login ----
+    private val signIn = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users."
+
+    @Test fun cookiesFileIsNeverSentWhenTheAnonymousAnalyzeWorks() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(1, client.calls.size)
+        assertFalse("--cookies" in client.calls.single().options)
+    }
+
+    @Test fun aLoginWallRetriesOnceWithTheCookiesFile() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(2, client.calls.size)
+        assertFalse("--cookies" in client.calls[0].options)
+        val retry = client.calls[1].options
+        assertEquals("/data/cookies.txt", retry[retry.indexOf("--cookies") + 1])
+    }
+
+    @Test fun ifTheCookiesAlsoFailTheOriginalErrorWins() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), exited(1, "ERROR: cookies are stale"))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertTrue((r as AnalyzeOutcome.Failure).message.contains("Sign in"))
+        assertEquals(2, client.calls.size)
+    }
+
+    @Test fun aFailureThatIsNotALoginIsNotRetriedWithCookies() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, "ERROR: [generic] Unsupported URL: https://example.com/v"))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt")
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertEquals(1, client.calls.size)
+    }
+
+    @Test fun noCookiesFileMeansALoginWallIsJustAFailure() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn))))
+        val r = newEngine(client).analyze("https://example.com/v", null, null)
+        assertTrue(r is AnalyzeOutcome.Failure)
+        assertEquals(1, client.calls.size)
+    }
+
+    @Test fun aBlankCookiesFileIsTreatedAsNone() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn))))
+        newEngine(client).analyze("https://example.com/v", null, "  ")
+        assertEquals(1, client.calls.size)
     }
 
     @Test fun analyzeOptionsAreFlatCappedUtf8AndKeepWarnings() = runTest {
@@ -329,6 +379,47 @@ class YtDlpEngineImplDownloadTest {
         val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
         assertEquals(EngineEvent.Completed(0), events.last())
         assertFalse(events.any { it is EngineEvent.Log && it.isError })
+    }
+
+    // webm (AV1/VP9 + Opus) can't carry a cover: the media is saved, then yt-dlp fails the run on the embed.
+    @Test fun aThumbnailEmbedFailureRetriesOnceWithoutTheEmbed() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + listOf("--embed-metadata", "--embed-thumbnail")).toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(1, client.calls[0].options.count { it == "--embed-thumbnail" })
+        assertFalse("--embed-thumbnail" in client.calls[1].options)
+        assertTrue("--embed-metadata" in client.calls[1].options) // only the cover is dropped
+        assertTrue(events.any { it is EngineEvent.Log && it.line.startsWith("[retry] This format can't carry a cover image") })
+        assertEquals(EngineEvent.Completed(0), events.last())
+        assertFalse(events.any { it is EngineEvent.Log && it.isError })
+    }
+
+    @Test fun theThrownPathAlsoRetriesWithoutTheEmbed() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(EngineEvent.Completed(0), events.last())
+    }
+
+    @Test fun theEmbedRetryRunsOnceAndThenReportsTheFailure() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR), exited(1, EMBED_ERR))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(listOf<EngineEvent>(EngineEvent.Log(EMBED_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
+    }
+
+    @Test fun noEmbedRetryWhenTheCoverWasNeverRequested() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, EMBED_ERR))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(1, client.calls.size)
+        assertEquals(EngineEvent.Completed(1), events.last())
+    }
+
+    @Test fun otherPostprocessingFailuresDoNotTriggerTheEmbedRetry() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, "ERROR: Postprocessing: Conversion failed!"))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(1, client.calls.size)
+        assertEquals(EngineEvent.Completed(1), events.last())
     }
 
     @Test fun drmDoesNotRetryWhenCheckFormatsIsAlreadyPresent() = runTest {

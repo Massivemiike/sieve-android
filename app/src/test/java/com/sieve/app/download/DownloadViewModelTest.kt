@@ -36,7 +36,12 @@ class DownloadViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     private class FakeEngine(var outcome: AnalyzeOutcome) : YtDlpEngine {
-        override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = outcome
+        /** The cookies file each analyze call was given. */
+        val analyzeCookies = mutableListOf<String?>()
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+            analyzeCookies += cookiesFile
+            return outcome
+        }
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"
@@ -131,6 +136,162 @@ class DownloadViewModelTest {
         assertEquals(1, sink.size)
         assertTrue((sink.first().spec as JobSpec.Download).engineArgs.contains("-f"))
         assertEquals("", sink.first().title) // no analyzed info
+    }
+
+    // ---- Windows download defaults: embed metadata + cover art, 4 parallel fragments ----
+
+    private fun argsFor(presetId: String): List<String> {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = presetId)
+        vm.onUrlChange("https://x/y")
+        vm.download()
+        dispatcher.scheduler.advanceUntilIdle()
+        return (sink.single().spec as JobSpec.Download).engineArgs
+    }
+
+    @Test fun everyPresetEmbedsMetadataAndCoverArtAndUsesFourFragments() {
+        for (p in DownloadPresets.ALL) {
+            val args = argsFor(p.id)
+            assertEquals(1, args.count { it == "--embed-metadata" }, p.id)
+            assertEquals(1, args.count { it == "--embed-thumbnail" }, p.id)
+            assertEquals("4", args[args.indexOf("-N") + 1], p.id)
+            assertTrue("--convert-thumbnails" !in args, p.id)
+        }
+    }
+
+    @Test fun anAudioPresetKeepsTheDesktopArgumentOrder() = assertEquals(
+        listOf(
+            "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+            "-x", "--audio-format", "mp3", "--audio-quality", "0",
+            "--embed-metadata", "--embed-thumbnail", "-N", "4",
+        ),
+        argsFor("audio-mp3"),
+    )
+
+    @Test fun theArchivePresetKeepsItsOwnExtrasAndAddsNoDuplicates() {
+        val args = argsFor("archive")
+        assertTrue(args.containsAll(listOf("--embed-subs", "--all-subs", "--embed-chapters", "--write-info-json", "--remux-video", "mkv")))
+        assertEquals(1, args.count { it == "--embed-thumbnail" })
+    }
+
+    // ---- Settings network rows reach yt-dlp ----
+
+    private fun networkArgs(
+        settings: com.sieve.engine.args.EngineSettings,
+        speed: String?,
+        presetId: String = "audio-mp3",
+    ): List<String> {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(
+            FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = presetId,
+            engineSettings = { settings }, speedLimit = { speed },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.download()
+        dispatcher.scheduler.advanceUntilIdle()
+        return (sink.single().spec as JobSpec.Download).engineArgs
+    }
+
+    @Test fun speedLimitProxyUserAgentAndCookiesAllReachTheArgsInDesktopOrder() {
+        val args = networkArgs(
+            com.sieve.engine.args.EngineSettings(
+                concurrentFragments = 4, proxy = "socks5://127.0.0.1:1080", cookiesFile = "/data/user/0/app/files/cookies.txt",
+                userAgent = "Mozilla/5.0 Test",
+            ),
+            speed = "2M",
+        )
+        // ...extras, toggles, then speed -> fragments -> proxy -> cookies -> user agent (YtdlpArgs.build order)
+        val tail = args.subList(args.indexOf("--embed-thumbnail") + 1, args.size)
+        assertEquals(
+            listOf(
+                "--limit-rate", "2M", "-N", "4", "--proxy", "socks5://127.0.0.1:1080",
+                "--cookies", "/data/user/0/app/files/cookies.txt", "--user-agent", "Mozilla/5.0 Test",
+            ),
+            tail,
+        )
+    }
+
+    @Test fun noSpeedLimitMeansNoLimitRateFlag() {
+        assertTrue("--limit-rate" !in networkArgs(defaultEngineSettingsForTest(), speed = null))
+    }
+
+    private fun defaultEngineSettingsForTest() =
+        com.sieve.engine.args.EngineSettings(concurrentFragments = com.sieve.engine.args.EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS)
+
+    @Test fun analyzeHandsTheEngineTheCookiesFile() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(
+            engine, { }, idGen = { "id" },
+            engineSettings = { com.sieve.engine.args.EngineSettings(cookiesFile = "/files/cookies.txt") },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<String?>("/files/cookies.txt"), engine.analyzeCookies)
+    }
+
+    @Test fun analyzeSendsNoCookiesFileWhenNoneIsSet() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<String?>(null), engine.analyzeCookies)
+    }
+
+    // ---- default / last-used preset ----
+
+    private fun presetVm(start: String, remembered: MutableList<String> = mutableListOf()) = DownloadViewModel(
+        FakeEngine(AnalyzeOutcome.Failure("x")), { }, idGen = { "id" },
+        initialPresetId = start, rememberPreset = { remembered += it },
+    )
+
+    @Test fun startsOnTheSavedPreset() {
+        assertEquals("best-720", presetVm("best-720").state.value.selectedPresetId)
+    }
+
+    @Test fun anUnknownSavedPresetFallsBackToTheFirstOne() {
+        assertEquals(DownloadPresets.DEFAULT_ID, presetVm("no-such-preset").state.value.selectedPresetId)
+    }
+
+    @Test fun withNothingSavedItStartsOnBestVideo() {
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { }, idGen = { "id" })
+        assertEquals("best-video", vm.state.value.selectedPresetId)
+    }
+
+    @Test fun pickingAPresetRemembersItAsTheNextStart() = runTest {
+        val remembered = mutableListOf<String>()
+        val vm = presetVm("best-video", remembered)
+        vm.selectPreset("audio-mp3")
+        advanceUntilIdle()
+        assertEquals("audio-mp3", vm.state.value.selectedPresetId)
+        assertEquals(listOf("audio-mp3"), remembered)
+    }
+
+    @Test fun anUnknownPresetIdIsIgnoredAndNotRemembered() = runTest {
+        val remembered = mutableListOf<String>()
+        val vm = presetVm("best-1080", remembered)
+        vm.selectPreset("nope")
+        advanceUntilIdle()
+        assertEquals("best-1080", vm.state.value.selectedPresetId)
+        assertTrue(remembered.isEmpty())
+    }
+
+    @Test fun clearingKeepsTheChosenPreset() = runTest {
+        val vm = presetVm("best-video")
+        vm.selectPreset("best-720")
+        vm.onUrlChange("https://x/y")
+        vm.clear()
+        assertEquals("best-720", vm.state.value.selectedPresetId)
+        assertEquals("", vm.state.value.url)
+    }
+
+    @Test fun downloadUsesTheStartingPresetWithoutAnyTap() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = "audio-mp3")
+        vm.onUrlChange("https://x/y")
+        vm.download(); advanceUntilIdle()
+        val args = (sink.single().spec as JobSpec.Download).engineArgs
+        assertTrue(args.containsAll(listOf("-x", "--audio-format", "mp3")))
+        assertEquals("MP3 320kbps", sink.single().format)
     }
 
     @Test fun mp4PresetsAskForH264FirstAndKeepTheirFallbacks() {

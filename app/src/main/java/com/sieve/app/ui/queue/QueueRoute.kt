@@ -20,21 +20,30 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -51,13 +60,26 @@ import com.sieve.app.ui.common.SieveProgress
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.Phase
 import com.sieve.queue.core.QueueJob
+import com.sieve.queue.service.OutputIntents
+import kotlinx.coroutines.launch
 
 @Composable
 fun QueueRoute(
     vm: QueueViewModel = viewModel(factory = viewModelFactory { initializer { QueueViewModel.from() } }),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
-    QueueScreen(state, vm::pause, vm::resume, vm::retry, vm::cancel)
+    val ctx = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    QueueScreen(
+        state, vm::pause, vm::resume, vm::retry, vm::cancel,
+        onRemove = vm::remove,
+        onClearFinished = vm::clearFinished,
+        onOpen = { job ->
+            if (!OutputIntents.open(ctx, job.filePath)) scope.launch { snackbar.showSnackbar("Can't open this file") }
+        },
+        snackbarHost = snackbar,
+    )
 }
 
 @Composable
@@ -67,8 +89,15 @@ fun QueueScreen(
     onResume: (String) -> Unit,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onRemove: (String) -> Unit = {},
+    onClearFinished: () -> Unit = {},
+    onOpen: (QueueJob) -> Unit = {},
+    snackbarHost: SnackbarHostState = remember { SnackbarHostState() },
 ) {
-    Scaffold(topBar = { QueueTopBar(state) }) { padding ->
+    Scaffold(
+        topBar = { QueueTopBar(state, onClearFinished) },
+        snackbarHost = { SnackbarHost(snackbarHost) },
+    ) { padding ->
         if (state.jobs.isEmpty()) {
             Box(Modifier.padding(padding).fillMaxWidth()) {
                 EmptyState(
@@ -84,7 +113,7 @@ fun QueueScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.jobs, key = { it.id }) { job ->
-                    JobRow(job, onPause, onResume, onRetry, onCancel)
+                    JobRow(job, onPause, onResume, onRetry, onCancel, onRemove, onOpen)
                 }
             }
         }
@@ -92,13 +121,30 @@ fun QueueScreen(
 }
 
 @Composable
-private fun QueueTopBar(state: QueueUiState) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp)) {
-        Text("Queue", style = MaterialTheme.typography.titleLarge)
-        Text(
-            "${state.summary.running} active · ${state.summary.queued} queued",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+private fun QueueTopBar(state: QueueUiState, onClearFinished: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Queue", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "${state.summary.running} active · ${state.summary.queued} queued",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        TextButton(onClick = { confirming = true }, enabled = state.finished > 0, modifier = Modifier.testTag("clear_finished")) {
+            Text("Clear finished")
+        }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Clear finished?") },
+            text = { Text("Removes ${state.finished} finished ${if (state.finished == 1) "item" else "items"} from the queue. Saved files stay where they are.") },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; onClearFinished() }, modifier = Modifier.testTag("clear_finished_confirm")) { Text("Clear") }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
     }
 }
@@ -110,6 +156,8 @@ private fun JobRow(
     onResume: (String) -> Unit,
     onRetry: (String) -> Unit,
     onCancel: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onOpen: (QueueJob) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
     val running = job.status == DownloadStatus.RUNNING || job.status == DownloadStatus.PREPARING
@@ -144,11 +192,14 @@ private fun JobRow(
                         }
                         DownloadStatus.FAILED -> {
                             IconBtn(Icons.Filled.Refresh, "retry_${job.id}") { onRetry(job.id) }
-                            IconBtn(Icons.Filled.Close, "cancel_${job.id}") { onCancel(job.id) }
+                            IconBtn(Icons.Filled.Close, "remove_${job.id}") { onRemove(job.id) }
                         }
                         DownloadStatus.QUEUED -> IconBtn(Icons.Filled.Close, "cancel_${job.id}") { onCancel(job.id) }
-                        DownloadStatus.COMPLETED -> IconBtn(Icons.Filled.Folder, "open_${job.id}") { }
-                        DownloadStatus.CANCELLED -> {}
+                        DownloadStatus.COMPLETED -> {
+                            IconBtn(Icons.AutoMirrored.Filled.OpenInNew, "open_${job.id}") { onOpen(job) }
+                            IconBtn(Icons.Filled.Close, "remove_${job.id}") { onRemove(job.id) }
+                        }
+                        DownloadStatus.CANCELLED -> IconBtn(Icons.Filled.Close, "remove_${job.id}") { onRemove(job.id) }
                     }
                 }
             }

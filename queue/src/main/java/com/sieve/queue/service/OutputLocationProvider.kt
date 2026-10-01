@@ -13,6 +13,14 @@ interface OutputLocationProvider {
     suspend fun prepare(job: QueueJob): PreparedOutput
     suspend fun finalize(job: QueueJob, prepared: PreparedOutput): FinalLocation
     suspend fun discard(job: QueueJob, prepared: PreparedOutput)
+
+    /**
+     * Drops whatever work-dir leftovers a job has (partial files of a paused-then-cancelled job,
+     * a failed finalize), without the caller holding its [PreparedOutput]. The work path is stable
+     * per job id and [prepare] only creates it, so prepare-then-discard is safe and never touches the
+     * finished output, which lives in the destination sink.
+     */
+    suspend fun cleanup(job: QueueJob) = discard(job, prepare(job))
 }
 
 /** Injectable wall clock. */

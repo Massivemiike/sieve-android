@@ -31,6 +31,7 @@ import org.robolectric.RobolectricTestRunner
 import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -42,7 +43,7 @@ class SettingsViewModelTest {
 
     private class FakeEngine(private val update: () -> UpdateResult = { throw NotImplementedError() }) : YtDlpEngine {
         var updateCalls = 0
-        override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = throw NotImplementedError()
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = throw NotImplementedError()
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"
@@ -53,14 +54,31 @@ class SettingsViewModelTest {
     @After
     fun tearDown() = Dispatchers.resetMain()
 
+    /** The documents the "picker" can hand over, keyed by Uri string. */
+    private val documents = mutableMapOf<String, ByteArray>()
+    private val cookiesDir by lazy { tmp.newFolder("cookies") }
+    private val cookiesStore by lazy { CookiesStore(cookiesDir, open = { documents[it]?.inputStream() }) }
+
+    private lateinit var appSettings: AppSettings
+
     /** A VM whose viewModelScope runs eagerly on the test scheduler. */
     private fun TestScope.newVm(engine: YtDlpEngine, downloadActive: () -> Boolean = { false }): SettingsViewModel {
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val store = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
         ) { File(tmp.newFolder(), "s.preferences_pb") }
-        return SettingsViewModel(AppSettings(store), StorageSettings(store), engine, downloadActive)
+        appSettings = AppSettings(store)
+        return SettingsViewModel(
+            appSettings, StorageSettings(store), engine, downloadActive,
+            cookiesStore = cookiesStore, io = UnconfinedTestDispatcher(testScheduler),
+        )
     }
+
+    private val goodCookies = (
+        "# Netscape HTTP Cookie File\n" +
+            ".youtube.com\tTRUE\t/\tTRUE\t1893456000\tSID\tabc\n" +
+            "#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1893456000\t__Secure-1PSID\tdef\n"
+        ).toByteArray()
 
     @Test
     fun updateIsRefusedWhileADownloadRuns() = runTest {
@@ -112,6 +130,122 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun proxyIsValidatedTrimmedAndClearable() = runTest {
+        val vm = newVm(FakeEngine())
+        vm.setProxy("  socks5://127.0.0.1:1080 ")
+        assertEquals("socks5://127.0.0.1:1080", appSettings.flow.first().proxy)
+        vm.setProxy("not a proxy")                       // rejected: the stored value stays
+        assertEquals("socks5://127.0.0.1:1080", appSettings.flow.first().proxy)
+        vm.setProxy("")                                  // blank clears
+        assertNull(appSettings.flow.first().proxy)
+    }
+
+    @Test
+    fun userAgentKeepsItsSpacesButNotItsEdges() = runTest {
+        val vm = newVm(FakeEngine())
+        vm.setUserAgent("  Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0 ")
+        assertEquals("Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0", appSettings.flow.first().userAgent)
+        vm.setUserAgent("bad\nagent")
+        assertEquals("Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0", appSettings.flow.first().userAgent)
+    }
+
+    @Test
+    fun speedLimitIsNormalizedAndZeroMeansUnlimited() = runTest {
+        val vm = newVm(FakeEngine())
+        vm.setSpeedLimit(" 2 m ")
+        assertEquals("2M", appSettings.flow.first().speedLimit)
+        vm.setSpeedLimit("fast")                         // rejected
+        assertEquals("2M", appSettings.flow.first().speedLimit)
+        vm.setSpeedLimit("0")
+        assertNull(appSettings.flow.first().speedLimit)
+    }
+
+    @Test
+    fun importingCookiesCopiesThemAndStoresTheAppPrivatePath() = runTest {
+        documents["content://picker/cookies.txt"] = goodCookies
+        val vm = newVm(FakeEngine())
+        vm.importCookies("content://picker/cookies.txt")
+
+        val s = vm.state.first { it.cookies != null }
+        assertEquals(2, s.cookies!!.count)
+        assertNull(s.cookiesMessage)
+        val path = appSettings.flow.first().cookiesFileUri!!
+        assertEquals(File(cookiesDir, "cookies.txt").absolutePath, path)   // a real path, never a content:// Uri
+        assertTrue(File(path).isFile)
+    }
+
+    @Test
+    fun aFileThatIsNotACookiesTxtIsRejectedWithAMessage() = runTest {
+        documents["content://picker/notes.txt"] = "buy milk\nand eggs".toByteArray()
+        val vm = newVm(FakeEngine())
+        vm.importCookies("content://picker/notes.txt")
+
+        val s = vm.state.first { it.cookiesMessage != null }
+        assertEquals("That doesn't look like a cookies.txt (Netscape format).", s.cookiesMessage)
+        assertNull(s.cookies)
+        assertNull(appSettings.flow.first().cookiesFileUri)
+        assertFalse(File(cookiesDir, "cookies.txt").exists())
+    }
+
+    @Test
+    fun anUnreadablePickIsReportedNotThrown() = runTest {
+        val vm = newVm(FakeEngine())
+        vm.importCookies("content://picker/gone.txt")                       // no such document
+        assertEquals("Couldn't read that file.", vm.state.first { it.cookiesMessage != null }.cookiesMessage)
+        vm.dismissCookiesMessage()
+        assertNull(vm.state.first { it.cookiesMessage == null }.cookiesMessage)
+    }
+
+    @Test
+    fun aFailedReplaceKeepsTheWorkingCookies() = runTest {
+        documents["content://picker/good.txt"] = goodCookies
+        documents["content://picker/bad.txt"] = "{\"json\": true}".toByteArray()
+        val vm = newVm(FakeEngine())
+        vm.importCookies("content://picker/good.txt")
+        vm.state.first { it.cookies != null }
+        vm.importCookies("content://picker/bad.txt")
+
+        val s = vm.state.first { it.cookiesMessage != null }
+        assertEquals(2, s.cookies!!.count)                                  // still loaded
+        assertTrue(File(cookiesDir, "cookies.txt").readText().contains("SID"))
+    }
+
+    @Test
+    fun removingCookiesDeletesTheCopyAndTheSetting() = runTest {
+        documents["content://picker/cookies.txt"] = goodCookies
+        val vm = newVm(FakeEngine())
+        vm.importCookies("content://picker/cookies.txt")
+        vm.state.first { it.cookies != null }
+
+        vm.removeCookies()
+        assertNull(vm.state.first { it.cookies == null }.cookies)
+        assertNull(appSettings.flow.first().cookiesFileUri)
+        assertFalse(File(cookiesDir, "cookies.txt").exists())
+    }
+
+    @Test
+    fun resetAlsoClearsNetworkSettingsAndCookies() = runTest {
+        documents["content://picker/cookies.txt"] = goodCookies
+        val vm = newVm(FakeEngine())
+        vm.setProxy("http://10.0.0.1:8080"); vm.setUserAgent("UA"); vm.setSpeedLimit("1M")
+        vm.importCookies("content://picker/cookies.txt")
+        vm.state.first { it.cookies != null }
+
+        vm.reset()
+        val p = appSettings.flow.first()
+        assertNull(p.proxy); assertNull(p.userAgent); assertNull(p.speedLimit); assertNull(p.cookiesFileUri)
+        assertFalse(File(cookiesDir, "cookies.txt").exists())
+    }
+
+    @Test
+    fun cookiesAlreadyOnDiskShowUpWhenSettingsOpens() = runTest {
+        File(cookiesDir, "cookies.txt").writeText(String(goodCookies))
+        val vm = newVm(FakeEngine())
+        appSettings.setCookiesFileUri(File(cookiesDir, "cookies.txt").absolutePath)
+        assertEquals(2, vm.state.first { it.cookies != null }.cookies!!.count)
+    }
+
+    @Test
     fun settersPersistThroughAppSettings() = runTest {
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val store = PreferenceDataStoreFactory.create(
@@ -119,7 +253,7 @@ class SettingsViewModelTest {
         ) { File(tmp.newFolder(), "s.preferences_pb") }
         val app = AppSettings(store)
         val storage = StorageSettings(store)
-        val vm = SettingsViewModel(app, storage, FakeEngine())
+        val vm = SettingsViewModel(app, storage, FakeEngine(), cookiesStore = cookiesStore)
 
         vm.setThemeMode(ThemeMode.LIGHT)
         vm.setMaxDownloads(5)

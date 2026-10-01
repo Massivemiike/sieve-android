@@ -9,16 +9,20 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.room.Room
 import kotlinx.coroutines.withContext
+import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
+import com.sieve.app.settings.CookiesStore
 import com.sieve.data.db.SieveDatabase
 import com.sieve.engine.EngineInit
 import com.sieve.engine.repo.YoutubeDLClientImpl
 import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.engine.repo.YtDlpEngineImpl
 import com.sieve.engine.update.GithubReleaseApiImpl
+import com.sieve.queue.core.QueueState
 import com.sieve.queue.core.awaitNoActiveDownload
 import com.sieve.queue.service.JobDriver
 import com.sieve.queue.service.QueueManager
+import com.sieve.queue.service.QueueNotification
 import com.sieve.queue.service.QueueRepository
 import com.sieve.queue.service.RealDownloadPort
 import com.sieve.queue.service.RealTranscodePort
@@ -33,7 +37,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
 /**
@@ -48,6 +54,7 @@ object AppGraph {
     lateinit var engine: YtDlpEngine; private set
     lateinit var queue: QueueRepository; private set
     lateinit var documentStore: SafDocumentStore; private set
+    lateinit var cookiesStore: CookiesStore; private set
     lateinit var encoderDetector: EncoderDetector; private set
     lateinit var ffmpegBinaryPath: String; private set
     var ffmpegEncodersStdout: String = ""; private set
@@ -73,6 +80,11 @@ object AppGraph {
         appSettings = AppSettings(prefs)
         storageSettings = StorageSettings(prefs)
         documentStore = SafDocumentStore(app)
+        cookiesStore = CookiesStore(
+            dir = app.filesDir,
+            open = { app.contentResolver.openInputStream(Uri.parse(it)) },
+            lastModifiedOf = { documentLastModified(app, it) },
+        )
         encoderDetector = EncoderDetector(AndroidVideoEncoderProbe(ffmpegEncodersStdout)) {
             Runtime.getRuntime().availableProcessors()
         }
@@ -88,10 +100,18 @@ object AppGraph {
 
         val dlPort = RealDownloadPort(engine)
         val txPort = RealTranscodePort(ffmpegBinaryPath)
+        // Start from the persisted caps (not the 3/1 defaults) so a restart-time drain already obeys them,
+        // then follow later changes so the Settings steppers apply without an app restart.
+        val initialPrefs = runCatching { runBlocking { appSettings.flow.first() } }.getOrDefault(AppPrefs())
         val manager = QueueManager(
             JobDriver(dlPort, txPort), dlPort, txPort, persistence, output, SystemClock(),
+            initial = QueueState(maxDownloads = initialPrefs.maxDownloads, maxTranscodes = initialPrefs.maxTranscodes),
+            // "Downloaded / Transcoded / Failed: <title>"; postDone never throws and skips quietly without the permission.
+            onCompleted = { QueueNotification.postDone(app, it) },
+            onFailed = { QueueNotification.postDone(app, it) },
         )
         queue = QueueRepository.create(app, manager, appScope)
+        queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })
         autoUpdateYtDlp(ioScope)
         initialized = true
     }
@@ -128,6 +148,13 @@ object AppGraph {
             }.onFailure { android.util.Log.w("SieveEngine", "yt-dlp auto-update skipped: ${it.message}") }
         }
     }
+
+    /** The picked document's own last-modified time (providers that expose it), else null. */
+    private fun documentLastModified(ctx: Context, uri: String): Long? = runCatching {
+        ctx.contentResolver.query(
+            Uri.parse(uri), arrayOf(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED), null, null, null,
+        )?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null }
+    }.getOrNull()
 
     /**
      * Materializes a SAF/content source into a real file path ffmpeg can read (native processes can't

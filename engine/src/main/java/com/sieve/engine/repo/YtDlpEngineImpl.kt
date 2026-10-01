@@ -81,12 +81,13 @@ class YtDlpEngineImpl(
      * `exitCode != 0` result are handled. `client.execute` blocks, so the timeout is a watchdog
      * that kills the process by id rather than a coroutine `withTimeout`.
      */
-    private suspend fun runAnalyze(url: String, cookiesBrowser: String?): VideoInfo = coroutineScope {
+    private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): VideoInfo = coroutineScope {
         val id = "analyze-${analyzeSeq.incrementAndGet()}"
         val opts = buildList {
             add("--encoding"); add("utf-8")
             add("-J"); add("--flat-playlist"); add("-I"); add("1:$ANALYZE_ENTRY_CAP")
             if (!cookiesBrowser.isNullOrBlank()) { add("--cookies-from-browser"); add(cookiesBrowser) }
+            if (!cookiesFile.isNullOrBlank()) { add("--cookies"); add(cookiesFile) }
         }
         val timedOut = AtomicBoolean(false)
         val watchdog = launch(Dispatchers.Default) {
@@ -114,51 +115,64 @@ class YtDlpEngineImpl(
     }
 
     /** [runAnalyze] plus the alternate-URL retry (Vimeo player form) when the site rejects the first form. */
-    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?): Analyzed {
+    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?, cookiesFile: String? = null): Analyzed {
         try {
-            return Analyzed(runAnalyze(url, cookiesBrowser), url)
+            return Analyzed(runAnalyze(url, cookiesBrowser, cookiesFile), url)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             val stderr = (e as? AnalyzeException)?.stderr ?: e.message
             val alt = SiteRules.fallbackUrl(url, SiteRules.errorText(stderr)) ?: throw e
             // The alternate form's answer is the more useful error when it fails too.
-            return Analyzed(runAnalyze(alt, cookiesBrowser), alt)
+            return Analyzed(runAnalyze(alt, cookiesBrowser, cookiesFile), alt)
         }
     }
 
-    override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = withContext(io) {
+    override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = withContext(io) {
         gate.withPermit {
-            val normalized = SiteRules.normalizeUrl(url)
-            val hadCookies = !cookiesBrowser.isNullOrBlank()
-            try {
-                val first = analyzeSettling(normalized, cookiesBrowser)
-                // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
-                if (hadCookies && StoryboardDetector.hasOnlyStoryboards(first.info)) {
-                    val fallback = runCatching { analyzeSettling(normalized, null) }.getOrNull()
-                    if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback.info)) {
-                        rememberSettled(url, normalized, fallback.used)
-                        return@withPermit AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
-                    }
-                    // else keep the original result
+            val first = analyzeAttempt(url, cookiesBrowser, cookiesFile = null)
+            // Anonymous first (the desktop's rule for hosts where cookies hurt, applied to the cookies file
+            // everywhere): the file only gets one go, and only when the site asked for a login.
+            if (first is AnalyzeOutcome.Failure && !cookiesFile.isNullOrBlank() && SiteRules.looksLoginRequired(first.message)) {
+                val withFile = analyzeAttempt(url, cookiesBrowser, cookiesFile)
+                if (withFile is AnalyzeOutcome.Success) withFile else first // the original error is the useful one
+            } else {
+                first
+            }
+        }
+    }
+
+    /** One analyze (browser cookies with their anonymous fallback, then the player-URL fallback), see [analyze]. */
+    private suspend fun analyzeAttempt(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+        val normalized = SiteRules.normalizeUrl(url)
+        val hadCookies = !cookiesBrowser.isNullOrBlank()
+        return try {
+            val first = analyzeSettling(normalized, cookiesBrowser, cookiesFile)
+            // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
+            if (hadCookies && StoryboardDetector.hasOnlyStoryboards(first.info)) {
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback.info)) {
+                    rememberSettled(url, normalized, fallback.used)
+                    return AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
                 }
-                rememberSettled(url, normalized, first.used)
-                AnalyzeOutcome.Success(first.info)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (err: Exception) {
-                if (hadCookies) {
-                    // The cookie attempt failed outright — retry without, returned unconditionally.
-                    val fallback = runCatching { analyzeSettling(normalized, null) }.getOrNull()
-                    if (fallback != null) {
-                        rememberSettled(url, normalized, fallback.used)
-                        AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
-                    } else {
-                        AnalyzeOutcome.Failure(err.message ?: "analyze failed") // original error
-                    }
+                // else keep the original result
+            }
+            rememberSettled(url, normalized, first.used)
+            AnalyzeOutcome.Success(first.info)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (err: Exception) {
+            if (hadCookies) {
+                // The cookie attempt failed outright — retry without, returned unconditionally.
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                if (fallback != null) {
+                    rememberSettled(url, normalized, fallback.used)
+                    AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
                 } else {
-                    AnalyzeOutcome.Failure(err.message ?: "analyze failed")
+                    AnalyzeOutcome.Failure(err.message ?: "analyze failed") // original error
                 }
+            } else {
+                AnalyzeOutcome.Failure(err.message ?: "analyze failed")
             }
         }
     }
@@ -238,6 +252,15 @@ class YtDlpEngineImpl(
                         runArgs = runArgs + CHECK_FORMATS
                         continue
                     }
+                    // Cover art embeds only into mp3/m4a/mp4/mkv/opus/flac. An AV1/VP9 + Opus merge is a .webm, and
+                    // there yt-dlp saves the media and THEN fails the whole run on the embed. Keep the saved file
+                    // and re-run once without the embed: yt-dlp sees the file already downloaded and only redoes
+                    // the post-processing, so the user gets the video instead of a failure.
+                    if (EMBED_THUMBNAIL in runArgs && THUMBNAIL_EMBED_FAILED.containsMatchIn(errs) && tried.add("embed-thumbnail")) {
+                        send(EngineEvent.Log("[retry] This format can't carry a cover image — retrying without it", null, false))
+                        runArgs = runArgs.filterNot { it == EMBED_THUMBNAIL }
+                        continue
+                    }
                 }
 
                 // Final failure: only the LAST attempt is reported — except when --check-formats found
@@ -299,6 +322,9 @@ class YtDlpEngineImpl(
         const val MAX_WARNINGS = 5
         const val SETTLED_URL_CAP = 1000
         const val CHECK_FORMATS = "--check-formats"
+        const val EMBED_THUMBNAIL = "--embed-thumbnail"
+        /** yt-dlp: `ERROR: Postprocessing: Supported filetypes for thumbnail embedding are: ...` (or a cover conversion error). */
+        val THUMBNAIL_EMBED_FAILED = Regex("Postprocessing:.*thumbnail", RegexOption.IGNORE_CASE)
         val DRM_PROTECTED = Regex("DRM protected", RegexOption.IGNORE_CASE)
         val REQUESTED_FORMAT = Regex("Requested format is not available", RegexOption.IGNORE_CASE)
     }

@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class SiteRulesNormalizeUrlTest {
     @Test fun linkedinCountrySubdomainBecomesWww() = assertEquals(
@@ -134,5 +135,28 @@ class SiteRulesErrorTextTest {
     @Test fun nullAndBlankGiveEmpty() {
         assertEquals("", SiteRules.errorText(null))
         assertEquals("", SiteRules.errorText("  \n "))
+    }
+
+    @Test fun loginRequiredFailuresAreRecognised() {
+        for (e in listOf(
+            "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate",
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot",
+            "ERROR: [vimeo] 1: The web client only works when logged-in. Use --cookies-from-browser or --cookies",
+            "ERROR: [instagram] x: Requested content is not available, rate-limit reached or login required",
+            "ERROR: [twitter] 1: This tweet is from a private account",
+            "ERROR: Unable to download JSON metadata: HTTP Error 401: Unauthorized",
+            "ERROR: [youtube] abc: Join this channel to get access to members-only content",
+        )) assertTrue(SiteRules.looksLoginRequired(e), e)
+    }
+
+    @Test fun otherFailuresAreNotLoginRequired() {
+        for (e in listOf(
+            "ERROR: [generic] Unsupported URL: https://example.com/login-tips-video",   // a URL slug is not a verdict
+            "ERROR: [youtube] abc: Video unavailable",
+            "ERROR: Unable to download webpage: HTTP Error 429: Too Many Requests",
+            "WARNING: Sign in to confirm your age. Some formats may be missing",           // WARNING lines never decide
+            "",
+        )) assertFalse(SiteRules.looksLoginRequired(e), e)
+        assertFalse(SiteRules.looksLoginRequired(null))
     }
 }
