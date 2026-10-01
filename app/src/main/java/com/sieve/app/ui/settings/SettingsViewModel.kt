@@ -7,6 +7,7 @@ import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
 import com.sieve.app.ui.theme.ThemeMode
 import com.sieve.engine.repo.YtDlpEngine
+import com.sieve.queue.core.hasActiveDownload
 import com.sieve.storage.settings.StorageSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -27,6 +28,8 @@ class SettingsViewModel(
     private val appSettings: AppSettings,
     private val storageSettings: StorageSettings,
     private val engine: YtDlpEngine,
+    /** True while a yt-dlp download is preparing/running. The updater replaces yt-dlp in place, so no update then. */
+    private val downloadActive: () -> Boolean = { false },
 ) : ViewModel() {
 
     private val extra = MutableStateFlow(SettingsUiState())
@@ -50,10 +53,21 @@ class SettingsViewModel(
     fun setOutputTree(uri: String?) = launch { storageSettings.setOutputTree(uri) }
 
     fun updateEngine() = launch {
+        if (downloadActive()) {
+            extra.value = extra.value.copy(updateMessage = UPDATE_BLOCKED_MESSAGE)
+            return@launch
+        }
         extra.value = extra.value.copy(updating = true, updateMessage = null)
-        val msg = runCatching { engine.doUpdate() }.map { "Engine updated" }.getOrElse { "Update failed" }
+        // doUpdate() reports failure as UpdateResult(ok = false) rather than throwing.
+        val msg = runCatching { engine.doUpdate() }.fold(
+            onSuccess = { if (it.ok) "Engine updated" else failureMessage(it.output) },
+            onFailure = { failureMessage(it.message) },
+        )
         extra.value = extra.value.copy(updating = false, updateMessage = msg, engineVersion = engine.version())
     }
+
+    private fun failureMessage(detail: String?): String =
+        detail?.trim()?.takeIf { it.isNotEmpty() }?.let { "Update failed: ${it.take(120)}" } ?: "Update failed"
 
     fun reset() = launch {
         appSettings.setThemeMode(ThemeMode.DARK)
@@ -67,6 +81,11 @@ class SettingsViewModel(
     private fun launch(block: suspend () -> Unit) = viewModelScope.launch { block() }
 
     companion object {
-        fun from(): SettingsViewModel = SettingsViewModel(AppGraph.appSettings, AppGraph.storageSettings, AppGraph.engine)
+        const val UPDATE_BLOCKED_MESSAGE = "Wait for downloads to finish before updating yt-dlp."
+
+        fun from(): SettingsViewModel = SettingsViewModel(
+            AppGraph.appSettings, AppGraph.storageSettings, AppGraph.engine,
+            downloadActive = { AppGraph.queue.state.value.hasActiveDownload() },
+        )
     }
 }

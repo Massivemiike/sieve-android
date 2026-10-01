@@ -11,6 +11,9 @@ data class RetryPolicy(val maxAutoRetries: Int = 1, val backoffMs: Long = 5_000L
  * `\bage\b` is word-boundaried on purpose: a bare `age` token matches "webpage"/"message" and would
  * misclassify transient failures (e.g. "Unable to download webpage: throttled") as permanent.
  * Unknown failures default to PERMANENT — never auto-retry something we don't recognize.
+ *
+ * URLs are blanked before matching: download failures now carry yt-dlp's real ERROR text, which echoes
+ * URLs, and a slug like `/login/` or `/403-error` must not decide the verdict.
  */
 object RetryClassifier {
 
@@ -25,11 +28,13 @@ object RetryClassifier {
         RegexOption.IGNORE_CASE,
     )
 
+    private val URL = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
+
     fun classify(info: FailureInfo): RetryClass {
         val haystack = buildString {
             append(info.message)
             info.stderrTail?.let { append('\n').append(it) }
-        }
+        }.replace(URL, " ")
         if (PERMANENT.containsMatchIn(haystack)) return RetryClass.PERMANENT
         if (TRANSIENT.containsMatchIn(haystack)) return RetryClass.TRANSIENT
         return RetryClass.PERMANENT // default: don't retry unknown failures

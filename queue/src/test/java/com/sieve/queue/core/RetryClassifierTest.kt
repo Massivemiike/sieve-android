@@ -36,6 +36,31 @@ class RetryClassifierTest(private val msg: String, private val expected: RetryCl
 }
 
 class RetryClassifierExitTest {
+    @Test fun `real yt-dlp 429 error line is transient`() {
+        val msg = "ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests " +
+            "(caused by HTTPError(429)); please report this issue on https://github.com/yt-dlp/yt-dlp/issues?q= , " +
+            "filling out the appropriate issue template."
+        assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(FailureInfo(msg, exitCode = 1)))
+    }
+
+    @Test fun `real yt-dlp network failure is transient`() {
+        val msg = "ERROR: [youtube] abc: Unable to download webpage: <urlopen error [Errno -3] Temporary failure in name resolution>"
+        assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(FailureInfo(msg, exitCode = 1)))
+    }
+
+    @Test fun `generic exit message stays permanent`() {
+        assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(FailureInfo("yt-dlp exited 1", exitCode = 1)))
+    }
+
+    @Test fun `urls do not decide the verdict`() {
+        // "login" in a URL slug would otherwise make a network failure PERMANENT...
+        val net = "ERROR: Unable to download webpage: The read operation timed out (https://example.com/login/page)"
+        assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(FailureInfo(net, exitCode = 1)))
+        // ...and "429" in a path must not make an unknown failure retry.
+        val odd = "ERROR: Something odd happened at https://example.com/watch/429/throttled"
+        assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(FailureInfo(odd, exitCode = 1)))
+    }
+
     @Test fun `ffmpeg stderr tail signals permanent codec error`() {
         val c = RetryClassifier.classify(FailureInfo("exit 1", exitCode = 1, stderrTail = "Unknown encoder 'h264_nvenc'"))
         assertEquals(RetryClass.PERMANENT, c)

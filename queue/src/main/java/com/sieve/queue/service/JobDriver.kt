@@ -1,5 +1,6 @@
 package com.sieve.queue.service
 
+import com.sieve.engine.parse.YtdlpErrors
 import com.sieve.engine.repo.EngineEvent
 import com.sieve.queue.core.CancelReason
 import com.sieve.queue.core.FailureInfo
@@ -33,18 +34,23 @@ class JobDriver(
 
     private fun driveDownload(job: QueueJob, spec: JobSpec.Download, reason: () -> CancelReason?): Flow<JobSignal> = flow {
         var terminated = false
+        // The engine reports a failed run as ONE isError Log carrying yt-dlp's whole stderr, then
+        // Completed(1). Keep it so the failed job carries the real error, not just the exit code.
+        var errorBlob: String? = null
         downloadPort.download(job.id, spec.url, spec.engineArgs).collect { ev ->
             if (terminated) return@collect
             when (ev) {
                 is EngineEvent.Progress -> emit(JobSignal.Progress(job.id, ProgressMapper.fromDownload(ev.progress)))
-                is EngineEvent.Log -> emit(JobSignal.Log(job.id, ev.line, ev.isError, ev.filePath))
+                is EngineEvent.Log -> {
+                    if (ev.isError) errorBlob = ev.line
+                    emit(JobSignal.Log(job.id, ev.line, ev.isError, ev.filePath))
+                }
                 is EngineEvent.Completed -> {
                     terminated = true
                     emit(
                         JobSignal.Terminal(
                             job.id,
-                            if (ev.exitCode == 0) Outcome.Succeeded
-                            else Outcome.Failed(FailureInfo("yt-dlp exited ${ev.exitCode}", exitCode = ev.exitCode)),
+                            if (ev.exitCode == 0) Outcome.Succeeded else Outcome.Failed(downloadFailure(ev.exitCode, errorBlob)),
                         ),
                     )
                 }
@@ -58,6 +64,20 @@ class JobDriver(
                 }
             }
         }
+    }
+
+    /**
+     * The message stays RAW (yt-dlp's own ERROR lines, not humanized) so [com.sieve.queue.core.RetryClassifier]
+     * sees the real signals (429, network, ...); the UI humanizes it for display. Only `ERROR:` lines are
+     * kept — WARNING lines would otherwise leak into the verdict. The full blob tail rides in `stderrTail`.
+     */
+    private fun downloadFailure(exitCode: Int, blob: String?): FailureInfo {
+        val text = blob.orEmpty()
+        val message = YtdlpErrors.errorLines(text)
+            .ifBlank { text.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty() }
+            .take(500)
+            .ifBlank { "yt-dlp exited $exitCode" }
+        return FailureInfo(message = message, exitCode = exitCode, stderrTail = text.takeLast(4000).ifEmpty { null })
     }
 
     private fun driveTranscode(job: QueueJob, spec: JobSpec.Transcode, reason: () -> CancelReason?): Flow<JobSignal> = flow {
