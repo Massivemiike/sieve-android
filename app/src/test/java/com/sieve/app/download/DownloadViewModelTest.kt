@@ -133,6 +133,63 @@ class DownloadViewModelTest {
         assertEquals("", sink.first().title) // no analyzed info
     }
 
+    // ---- default / last-used preset ----
+
+    private fun presetVm(start: String, remembered: MutableList<String> = mutableListOf()) = DownloadViewModel(
+        FakeEngine(AnalyzeOutcome.Failure("x")), { }, idGen = { "id" },
+        initialPresetId = start, rememberPreset = { remembered += it },
+    )
+
+    @Test fun startsOnTheSavedPreset() {
+        assertEquals("best-720", presetVm("best-720").state.value.selectedPresetId)
+    }
+
+    @Test fun anUnknownSavedPresetFallsBackToTheFirstOne() {
+        assertEquals(DownloadPresets.DEFAULT_ID, presetVm("no-such-preset").state.value.selectedPresetId)
+    }
+
+    @Test fun withNothingSavedItStartsOnBestVideo() {
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { }, idGen = { "id" })
+        assertEquals("best-video", vm.state.value.selectedPresetId)
+    }
+
+    @Test fun pickingAPresetRemembersItAsTheNextStart() = runTest {
+        val remembered = mutableListOf<String>()
+        val vm = presetVm("best-video", remembered)
+        vm.selectPreset("audio-mp3")
+        advanceUntilIdle()
+        assertEquals("audio-mp3", vm.state.value.selectedPresetId)
+        assertEquals(listOf("audio-mp3"), remembered)
+    }
+
+    @Test fun anUnknownPresetIdIsIgnoredAndNotRemembered() = runTest {
+        val remembered = mutableListOf<String>()
+        val vm = presetVm("best-1080", remembered)
+        vm.selectPreset("nope")
+        advanceUntilIdle()
+        assertEquals("best-1080", vm.state.value.selectedPresetId)
+        assertTrue(remembered.isEmpty())
+    }
+
+    @Test fun clearingKeepsTheChosenPreset() = runTest {
+        val vm = presetVm("best-video")
+        vm.selectPreset("best-720")
+        vm.onUrlChange("https://x/y")
+        vm.clear()
+        assertEquals("best-720", vm.state.value.selectedPresetId)
+        assertEquals("", vm.state.value.url)
+    }
+
+    @Test fun downloadUsesTheStartingPresetWithoutAnyTap() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(FakeEngine(AnalyzeOutcome.Failure("x")), { sink += it }, idGen = { "id" }, initialPresetId = "audio-mp3")
+        vm.onUrlChange("https://x/y")
+        vm.download(); advanceUntilIdle()
+        val args = (sink.single().spec as JobSpec.Download).engineArgs
+        assertTrue(args.containsAll(listOf("-x", "--audio-format", "mp3")))
+        assertEquals("MP3 320kbps", sink.single().format)
+    }
+
     @Test fun mp4PresetsAskForH264FirstAndKeepTheirFallbacks() {
         // [ext=mp4] alone also matches AV1-in-MP4 (YouTube serves it first), which breaks the
         // "H.264, widely compatible" promise; the old chain stays behind it as the fallback.

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.util.UUID
 
 data class DownloadUiState(
@@ -27,7 +28,7 @@ data class DownloadUiState(
     /** Humanized analyze failure: [error] is the headline, [errorHint] the actionable second line. */
     val error: String? = null,
     val errorHint: String? = null,
-    val selectedPresetId: String = "best-video",
+    val selectedPresetId: String = DownloadPresets.DEFAULT_ID,
     val presets: List<DownloadPreset> = DownloadPresets.ALL,
 ) {
     val canDownload: Boolean get() = url.isNotBlank()
@@ -47,9 +48,13 @@ class DownloadViewModel(
     // SUBFOLDER under that root — passing "Download/Sieve" here created Download/Sieve/Download_Sieve.
     private val outputDirLabel: suspend () -> String = { "" },
     private val idGen: () -> String = { UUID.randomUUID().toString() },
+    // The preset the screen starts on, and where a pick is remembered. Like the desktop app (NewDownload.tsx
+    // starts on `lastPreset || defaultPreset`), the last preset you chose is the one you start on next time.
+    initialPresetId: String = DownloadPresets.DEFAULT_ID,
+    private val rememberPreset: suspend (String) -> Unit = {},
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(DownloadUiState())
+    private val _state = MutableStateFlow(DownloadUiState(selectedPresetId = DownloadPresets.byId(initialPresetId).id))
     val state: StateFlow<DownloadUiState> = _state.asStateFlow()
 
     fun onUrlChange(url: String) {
@@ -57,11 +62,14 @@ class DownloadViewModel(
     }
 
     fun selectPreset(id: String) {
-        _state.value = _state.value.copy(selectedPresetId = id)
+        val preset = DownloadPresets.ALL.firstOrNull { it.id == id } ?: return
+        _state.value = _state.value.copy(selectedPresetId = preset.id)
+        viewModelScope.launch { runCatching { rememberPreset(preset.id) } }
     }
 
+    /** Clears the link and analysis; the chosen preset stays (the desktop never resets it either). */
     fun clear() {
-        _state.value = DownloadUiState()
+        _state.value = DownloadUiState(selectedPresetId = _state.value.selectedPresetId)
     }
 
     fun analyze() {
@@ -122,6 +130,10 @@ class DownloadViewModel(
                 )
             },
             outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "" },
+            // The stored value is already in DataStore's memory (AppGraph.init read it), so this returns at once.
+            initialPresetId = runCatching { runBlocking { AppGraph.appSettings.flow.first().defaultPresetId } }
+                .getOrDefault(DownloadPresets.DEFAULT_ID),
+            rememberPreset = { AppGraph.appSettings.setDefaultPreset(it) },
         )
     }
 }
