@@ -88,6 +88,28 @@ class FfmpegArgsTest {
         )
     }
 
+    @Test fun dnxhrHq_forces8bit422PixFmtRightAfterProfile() {
+        // DNxHR HQ/SQ are 8-bit 4:2:2 only; a 10-bit 4:2:0 (HDR10 HEVC) source can't open the encoder otherwise.
+        assertEquals(
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le"),
+            FfmpegArgs.build("dnxhr-hq", SOFTWARE),
+        )
+    }
+
+    @Test fun dnxhrSq_forces8bit422PixFmtRightAfterProfile() {
+        assertEquals(
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le"),
+            FfmpegArgs.build("dnxhr-sq", SOFTWARE),
+        )
+    }
+
+    @Test fun dnxhr444_keepsItsOwn10bitPixFmt() {
+        assertEquals(
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le"),
+            FfmpegArgs.build("dnxhr-444", SOFTWARE),
+        )
+    }
+
     @Test fun yt1080_useBitrateAndPresetSlow_presetPrecedesVf() {
         val args = FfmpegArgs.build("yt-1080", SOFTWARE)
         assertEquals(
@@ -116,7 +138,8 @@ class FfmpegArgsTest {
 
     @Test fun audioPresetsLeadWithVn_noVideoCodec() {
         assertEquals(listOf("-vn", "-c:a", "libmp3lame", "-b:a", "320k"), FfmpegArgs.build("mp3-320", SOFTWARE))
-        assertEquals(listOf("-vn", "-c:a", "flac"), FfmpegArgs.build("flac", SOFTWARE))
+        // fixed 4608-sample block size: newer ffmpeg follows the decoder's frame size otherwise
+        assertEquals(listOf("-vn", "-c:a", "flac", "-frame_size", "4608"), FfmpegArgs.build("flac", SOFTWARE))
         assertEquals(listOf("-vn", "-c:a", "pcm_s16le"), FfmpegArgs.build("wav", SOFTWARE))
     }
 

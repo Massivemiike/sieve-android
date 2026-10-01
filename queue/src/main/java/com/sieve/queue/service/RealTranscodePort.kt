@@ -40,10 +40,13 @@ class RealTranscodePort(binaryPath: String) : TranscodePort {
         //    has no working software AV1 decoder, so they otherwise fail with 0 frames encoded.
         //  - MediaCodec encoders ignore -crf/-preset and default to ~200 kbps: the sanitizer strips
         //    them and injects a height/CRF-derived -b:v.
+        //  - "Normalize audio" appends `aresample=48000` after loudnorm (which upsamples to 192 kHz
+        //    internally); restore the source's own sample rate (no ffprobe here — MediaExtractor).
         val info = com.sieve.transcode.runner.android.SourceProbe.probe(job.inputPath)
+        val sanitized = com.sieve.transcode.args.MediaCodecSanitizer.sanitize(job.presetArgs, info?.height)
         val adapted = job.copy(
             inputArgs = com.sieve.transcode.runner.android.SourceProbe.requiredInputArgs(info),
-            presetArgs = com.sieve.transcode.args.MediaCodecSanitizer.sanitize(job.presetArgs, info?.height),
+            presetArgs = com.sieve.transcode.args.LoudnormRate.restore(sanitized, info?.audioSampleRate),
         )
         return runner.run(adapted)
     }

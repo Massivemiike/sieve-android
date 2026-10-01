@@ -75,8 +75,10 @@ object FfmpegArgs {
             "prores-422" -> listOf("-c:v", "prores_ks", "-profile:v", "2", "-c:a", "pcm_s16le")
             "prores-hq" -> listOf("-c:v", "prores_ks", "-profile:v", "3", "-c:a", "pcm_s16le")
             "prores-4444" -> listOf("-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-c:a", "pcm_s16le")
-            "dnxhr-hq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-c:a", "pcm_s16le")
-            "dnxhr-sq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-c:a", "pcm_s16le")
+            // DNxHR LB/SQ/HQ are 8-bit 4:2:2 only — without an explicit pix_fmt a 10-bit 4:2:0
+            // source (HDR10 HEVC, common from phone cameras) fails to open the encoder.
+            "dnxhr-hq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le")
+            "dnxhr-sq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le")
             "dnxhr-444" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le")
             // ── Social ──────────────────────────────────────────────
             "yt-source" -> listOf("-c:v", v, "-crf", "18", "-preset", "slow", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
@@ -93,7 +95,9 @@ object FfmpegArgs {
             "mp3-320" -> listOf("-vn", "-c:a", "libmp3lame", "-b:a", "320k")
             "aac-256" -> listOf("-vn", "-c:a", "aac", "-b:a", "256k")
             "opus-160" -> listOf("-vn", "-c:a", "libopus", "-b:a", "160k")
-            "flac" -> listOf("-vn", "-c:a", "flac")
+            // Fixed block size: newer ffmpeg follows the decoder's frame size, which breaks FLAC
+            // after loudnorm and bloats files from AAC sources.
+            "flac" -> listOf("-vn", "-c:a", "flac", "-frame_size", "4608")
             "wav" -> listOf("-vn", "-c:a", "pcm_s16le")
             // ── Devices ─────────────────────────────────────────────
             "apple-iphone" -> listOf("-c:v", v, "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
