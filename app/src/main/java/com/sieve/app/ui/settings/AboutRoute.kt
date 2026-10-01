@@ -87,6 +87,12 @@ fun AboutRoute() {
             item { LicenseCard("FFmpeg — written offer for source", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
             item {
                 LicenseCard(
+                    "FFmpeg codec libraries — Opus, libvpx, SVT-AV1, libwebp, LAME",
+                    "licenses/CODEC_LICENSES.txt", "license_codecs",
+                )
+            }
+            item {
+                LicenseCard(
                     "Browser impersonation — curl_cffi, curl-impersonate & bundled libraries",
                     "licenses/IMPERSONATE_LICENSES.txt", "license_impersonate",
                 )
