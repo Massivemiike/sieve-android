@@ -104,6 +104,14 @@ class MediaCodecSanitizerTest {
         assertEquals(args, MediaCodecSanitizer.sanitize(args, 1080))
     }
 
+    @Test
+    fun `duration-derived discord bitrate survives the sanitizer untouched`() {
+        // The size-fit -b:v must not be replaced by the height ladder (which would blow the Discord cap).
+        val args = FfmpegArgs.build("discord-25", BuilderEncoder.HARDWARE, durationSec = 240.0)
+        assertEquals(args, MediaCodecSanitizer.sanitize(args, 2160))
+        assertEquals("675908", args[args.indexOf("-b:v") + 1])
+    }
+
     // ── ladder height = the preset's OUTPUT height ──────────────────
     @Test
     fun `ladder follows the preset's scale target instead of the source height`() {

@@ -146,11 +146,71 @@ class FfmpegArgsTest {
         )
     }
 
-    @Test fun discord25_usesFsCap() {
+    // ── Discord size caps: fit the WHOLE clip; -fs is only a safety ceiling ──
+    @Test fun discord25_unknownDuration_fallsBackToFsCapOnly() {
+        // durationSec <= 0 → no bitrate can be derived; keep the -fs ceiling (desktop discordFitArgs parity).
         assertEquals(
             listOf("-c:v", "libx264", "-fs", "25M", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"),
             FfmpegArgs.build("discord-25", SOFTWARE),
         )
+        assertEquals(
+            FfmpegArgs.build("discord-25", SOFTWARE),
+            FfmpegArgs.build("discord-25", SOFTWARE, durationSec = -1.0),
+        )
+    }
+
+    @Test fun discord25_knownDuration_targetsABitrateThatFitsTheCap() {
+        // 25 MiB * 8 * 0.92 / 240 s = 803908 bps total, minus 128 kbps audio = 675908 bps of video.
+        assertEquals(
+            listOf("-c:v", "libx264", "-b:v", "675908", "-maxrate", "675908", "-bufsize", "1351816", "-fs", "25M",
+                "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-25", SOFTWARE, durationSec = 240.0),
+        )
+    }
+
+    @Test fun discord8_knownDuration_usesTheSmallerBudgetAndAudio() {
+        // 8 MiB * 8 * 0.92 / 60 s = 1029002 bps total, minus 96 kbps audio = 933002 bps of video.
+        assertEquals(
+            listOf("-c:v", "libx264", "-b:v", "933002", "-maxrate", "933002", "-bufsize", "1866004", "-fs", "8M",
+                "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-8", SOFTWARE, durationSec = 60.0),
+        )
+    }
+
+    @Test fun discord_videoBitrateFloorsAt200kbps() {
+        // 8 MiB over 4 minutes leaves only 161250 bps of video → clamped to the 200 kbps floor.
+        val args = FfmpegArgs.build("discord-8", SOFTWARE, durationSec = 240.0)
+        assertEquals("200000", args[args.indexOf("-b:v") + 1])
+        assertEquals("200000", args[args.indexOf("-maxrate") + 1])
+        assertEquals("400000", args[args.indexOf("-bufsize") + 1])
+    }
+
+    @Test fun discord_hardwareGetsTheSameRateControl() {
+        // MediaCodec only consumes -b:v; the sanitizer leaves it alone because -b:v is already present.
+        assertEquals(
+            listOf("-c:v", "h264_mediacodec", "-b:v", "933002", "-maxrate", "933002", "-bufsize", "1866004", "-fs", "8M",
+                "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-8", HARDWARE, durationSec = 60.0),
+        )
+    }
+
+    @Test fun discord_budgetUsesTheTrimmedLengthNotTheWholeSource() {
+        // trim 25%..75% of 400 s → -ss 100 -to 300 → a 200 s output: 192937984 bits / 200 s = 964689 bps,
+        // minus 128 kbps audio = 836689. (Divergence from the desktop, which budgets the untrimmed length.)
+        val args = FfmpegArgs.build("discord-25", SOFTWARE, trimIn = 0.25, trimOut = 0.75, durationSec = 400.0)
+        assertEquals(listOf("-ss", "100", "-to", "300", "-c:v", "libx264", "-b:v", "836689"), args.take(8))
+    }
+
+    @Test fun discord_estimatedSizeStaysUnderTheCapForTypicalDurations() {
+        for ((id, capMiB, audioBps) in listOf(Triple("discord-25", 25, 128_000), Triple("discord-8", 8, 96_000))) {
+            for (sec in listOf(5, 30, 60, 120, 300, 600)) {
+                val args = FfmpegArgs.build(id, SOFTWARE, durationSec = sec.toDouble())
+                val vbps = args[args.indexOf("-b:v") + 1].toLong()
+                if (vbps == 200_000L) continue // floored: the -fs ceiling is the only guard, by design
+                val bytes = (vbps + audioBps) * sec / 8.0
+                assertTrue("$id ${sec}s estimated $bytes B exceeds the cap", bytes <= capMiB * 1024.0 * 1024.0)
+            }
+        }
     }
 
     @Test fun audioPresetsLeadWithVn_noVideoCodec() {
