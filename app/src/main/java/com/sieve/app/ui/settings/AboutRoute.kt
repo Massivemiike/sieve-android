@@ -76,19 +76,33 @@ fun AboutRoute() {
             item { SectionLabel("License compliance") }
             item {
                 Text(
-                    "Sieve links GPL-licensed components at runtime — a self-built full-GPL FFmpeg and " +
-                        "youtubedl-android (yt-dlp) — so the whole app is licensed under the GNU GPL v3.",
+                    "Sieve ships GPL-licensed components — a self-built full-GPL FFmpeg, and youtubedl-android with " +
+                        "its own FFmpeg and Python runtime — so the whole app is licensed under the GNU GPL v3. " +
+                        "The written offer below names the source of all of it; the other cards hold the notices " +
+                        "each component requires.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             item { LicenseCard("GNU GPL v3 (FFmpeg + youtubedl-android)", "licenses/GPL.txt", "license_gpl") }
             item { LicenseCard("yt-dlp (Unlicense / public domain)", "licenses/YT_DLP_LICENSE.txt", "license_ytdlp") }
-            item { LicenseCard("FFmpeg — written offer for source", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
+            item { LicenseCard("Written offer for source — FFmpeg, youtubedl-android, Python", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
             item {
                 LicenseCard(
                     "FFmpeg codec libraries — Opus, libvpx, SVT-AV1, libwebp, LAME",
                     "licenses/CODEC_LICENSES.txt", "license_codecs",
+                )
+            }
+            item {
+                LicenseCard(
+                    "Engine components — Python, QuickJS, companion FFmpeg libraries",
+                    "licenses/ENGINE_NOTICES.txt", "license_engine",
+                )
+            }
+            item {
+                LicenseCard(
+                    "Other license texts — Apache 2.0, GPL 2, LGPL 2.1 / 3, MPL 2.0",
+                    "licenses/COPYLEFT_TEXTS.txt", "license_other",
                 )
             }
             item {

@@ -7,8 +7,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The notices the app ships must cover what the APK carries, and must not drift from what is actually
- * built. These check the text assets against the build files they describe.
+ * The GPL written offer and the notices the app ships must cover everything the APK carries, and must not
+ * drift from what is actually built. These check the text assets against the build files they describe.
  * Unit tests run with the module directory (app/) as the working directory.
  */
 class LicenseAssetsTest {
@@ -25,14 +25,14 @@ class LicenseAssetsTest {
         val about = File("src/main/java/com/sieve/app/ui/settings/AboutRoute.kt").readText()
         val paths = Regex("\"licenses/([A-Za-z0-9_]+\\.txt)\"").findAll(about).map { it.groupValues[1] }.toSet()
         assertTrue(
-            paths.containsAll(setOf("GPL.txt", "FFMPEG_SOURCE.txt", "CODEC_LICENSES.txt")),
-            "About must offer the GPL, the source offer and the codec notices: $paths",
+            paths.containsAll(setOf("GPL.txt", "FFMPEG_SOURCE.txt", "CODEC_LICENSES.txt", "ENGINE_NOTICES.txt", "COPYLEFT_TEXTS.txt")),
+            "About must offer the GPL, the source offer, the codec, engine and shared-license notices: $paths",
         )
         for (p in paths) assertTrue(File(assets, p).length() > 0, "licenses/$p is offered in About but missing or empty")
     }
 
     @Test fun theRepositoryMirrorsMatchTheShippedAssets() {
-        for (name in listOf("GPL.txt", "FFMPEG_SOURCE.txt", "CODEC_LICENSES.txt")) {
+        for (name in listOf("GPL.txt", "FFMPEG_SOURCE.txt", "CODEC_LICENSES.txt", "ENGINE_NOTICES.txt", "COPYLEFT_TEXTS.txt")) {
             assertEquals(asset(name), text(File(mirrors, name)), "licenses/$name differs from the asset the app ships")
         }
     }
@@ -43,6 +43,25 @@ class LicenseAssetsTest {
         val pins = Regex("(?m)^[A-Z0-9]+_(?:COMMIT|SHA256)=([0-9a-f]{40,64})$").findAll(script).map { it.groupValues[1] }.toList()
         assertTrue(pins.size >= 8, "expected the git commits and tarball hashes pinned in ffbuild.sh, found $pins")
         for (pin in pins) assertTrue(pin in offer, "ffbuild.sh pins $pin but the written offer does not name it")
+    }
+
+    @Test fun theOfferNamesTheYoutubedlAndroidSourceTagTheAppLinks() {
+        val gradle = text(File("../engine/build.gradle.kts"))
+        val version = Regex("youtubedl-android:library:([0-9.]+)").find(gradle)!!.groupValues[1]
+        assertEquals(version, Regex("youtubedl-android:ffmpeg:([0-9.]+)").find(gradle)!!.groupValues[1])
+        val offer = asset("FFMPEG_SOURCE.txt")
+        assertTrue("io.github.junkfood02.youtubedl-android:library:$version" in offer, "offer must name the library artifact $version")
+        assertTrue(Regex("Tag: +$version = commit [0-9a-f]{40}").containsMatchIn(offer), "offer must pin the upstream tag $version to its commit")
+        assertTrue("https://github.com/yausername/youtubedl-android" in offer)
+    }
+
+    @Test fun theOfferCoversTheBinariesInsideTheLibrary() {
+        val offer = asset("FFMPEG_SOURCE.txt")
+        for (needed in listOf(
+            "libffmpeg.zip.so", "libpython.zip.so", "libqjs.so", "Termux", "termux-packages",
+            "GNU Readline", "GNU dbm", "mutagen", "pycryptodomex", "QuickJS", "OpenSSL", "yt-dlp",
+        )) assertTrue(needed in offer, "the written offer does not mention $needed")
+        assertTrue(Regex("termux-packages +commit [0-9a-f]{40}").containsMatchIn(offer), "offer must pin the Termux recipes to a commit")
     }
 
     @Test fun theFiveNewCodecsHaveTheirLicenseTextsAndTheAomPatentLicense() {
@@ -67,5 +86,11 @@ class LicenseAssetsTest {
             val sha = Regex("(?m)^${v}_SHA256=([0-9a-f]{64})$").find(script)!!.groupValues[1]
             assertTrue(sha in codecs, "CODEC_LICENSES.txt was not regenerated for $v $ver (sha256 $sha): run transcode/build-ffmpeg/codec-licenses.sh")
         }
+    }
+
+    @Test fun theReadmeDoesNotOverclaimWhatShips() {
+        val readme = text(File("../README.md"))
+        assertFalse("licenses of all bundled components" in readme, "README still claims every bundled component's license ships in the app")
+        assertTrue("CODEC_LICENSES.txt" in readme && "ENGINE_NOTICES.txt" in readme, "README should list the notice files that do ship")
     }
 }
