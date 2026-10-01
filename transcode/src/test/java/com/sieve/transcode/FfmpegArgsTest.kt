@@ -2,8 +2,11 @@ package com.sieve.transcode
 
 import com.sieve.transcode.args.BuilderEncoder.HARDWARE
 import com.sieve.transcode.args.BuilderEncoder.SOFTWARE
+import com.sieve.transcode.args.ArgFinalizer
 import com.sieve.transcode.args.EncoderResolver
 import com.sieve.transcode.args.FfmpegArgs
+import com.sieve.transcode.args.FinalizeOptions
+import com.sieve.transcode.args.LoudnormRate
 import com.sieve.transcode.catalog.TranscodePresets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -91,23 +94,37 @@ class FfmpegArgsTest {
     @Test fun dnxhrHq_forces8bit422PixFmtRightAfterProfile() {
         // DNxHR HQ/SQ are 8-bit 4:2:2 only; a 10-bit 4:2:0 (HDR10 HEVC) source can't open the encoder otherwise.
         assertEquals(
-            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le"),
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le", "-ar", "48000"),
             FfmpegArgs.build("dnxhr-hq", SOFTWARE),
         )
     }
 
     @Test fun dnxhrSq_forces8bit422PixFmtRightAfterProfile() {
         assertEquals(
-            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le"),
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le", "-ar", "48000"),
             FfmpegArgs.build("dnxhr-sq", SOFTWARE),
         )
     }
 
     @Test fun dnxhr444_keepsItsOwn10bitPixFmt() {
         assertEquals(
-            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le"),
+            listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le", "-ar", "48000"),
             FfmpegArgs.build("dnxhr-444", SOFTWARE),
         )
+    }
+
+    @Test fun dnxhrMxfAudioIsPinnedTo48kHz_evenWithNormalize() {
+        // ffmpeg's MXF muxer only writes 48 kHz audio ("only 48khz is implemented", exit -1/EPERM);
+        // YouTube/most phone audio is 44.1 kHz. -ar must survive loudnorm's aresample restore.
+        val normalized = LoudnormRate.restore(
+            ArgFinalizer.finalize(
+                FfmpegArgs.build("dnxhr-hq", SOFTWARE),
+                FinalizeOptions(requestedThreads = 4, emitThreads = true, normalizeAudio = true),
+            ),
+            44100,
+        )
+        val ar = normalized.indexOf("-ar")
+        assertEquals("48000", normalized[ar + 1])
     }
 
     @Test fun yt1080_useBitrateAndPresetSlow_presetPrecedesVf() {

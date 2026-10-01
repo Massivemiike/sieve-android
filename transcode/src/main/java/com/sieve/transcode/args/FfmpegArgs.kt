@@ -77,9 +77,11 @@ object FfmpegArgs {
             "prores-4444" -> listOf("-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", "-c:a", "pcm_s16le")
             // DNxHR LB/SQ/HQ are 8-bit 4:2:2 only — without an explicit pix_fmt a 10-bit 4:2:0
             // source (HDR10 HEVC, common from phone cameras) fails to open the encoder.
-            "dnxhr-hq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le")
-            "dnxhr-sq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le")
-            "dnxhr-444" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le")
+            // The MXF muxer only writes 48 kHz audio; 44.1 kHz sources (most downloads) fail without
+            // -ar. (Divergence from the desktop args, which still have that bug.)
+            "dnxhr-hq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le", "-ar", "48000")
+            "dnxhr-sq" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_sq", "-pix_fmt", "yuv422p", "-c:a", "pcm_s16le", "-ar", "48000")
+            "dnxhr-444" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le", "-ar", "48000")
             // ── Social ──────────────────────────────────────────────
             "yt-source" -> listOf("-c:v", v, "-crf", "18", "-preset", "slow", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
             "yt-720" -> listOf("-c:v", v, "-b:v", "5M", "-preset", "slow", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
