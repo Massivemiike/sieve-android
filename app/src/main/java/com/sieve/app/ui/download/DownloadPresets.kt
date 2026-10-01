@@ -6,7 +6,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.graphics.vector.ImageVector
 
-/** A one-tap download preset. Ported verbatim from the desktop NewDownload.tsx DOWNLOAD_PRESETS. */
+/** A one-tap download preset. Ported from the desktop NewDownload.tsx DOWNLOAD_PRESETS (MP4 presets differ, see below). */
 data class DownloadPreset(
     val id: String,
     val label: String,
@@ -24,13 +24,17 @@ object DownloadPresets {
             "best-video", "Best video + audio", "Highest quality available",
             "bestvideo*+bestaudio/best", badge = "Recommended",
         ),
+        // H.264 first: [ext=mp4] alone also matches AV1-in-MP4, which YouTube ranks higher. (Divergence
+        // from the desktop strings, which still have that bug.)
         DownloadPreset(
             "best-1080", "1080p MP4", "H.264 1080p, widely compatible",
-            "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+            "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/" +
+                "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
         ),
         DownloadPreset(
             "best-720", "720p MP4", "Smaller file, good quality",
-            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/" +
+                "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best",
         ),
         DownloadPreset(
             "best-4k", "4K / Best resolution", "Up to 4K if available",

@@ -1,5 +1,6 @@
 package com.sieve.app.download
 
+import com.sieve.app.ui.download.DownloadPresets
 import com.sieve.app.ui.download.DownloadViewModel
 import com.sieve.engine.model.VideoInfo
 import com.sieve.engine.repo.AnalyzeOutcome
@@ -130,5 +131,16 @@ class DownloadViewModelTest {
         assertEquals(1, sink.size)
         assertTrue((sink.first().spec as JobSpec.Download).engineArgs.contains("-f"))
         assertEquals("", sink.first().title) // no analyzed info
+    }
+
+    @Test fun mp4PresetsAskForH264FirstAndKeepTheirFallbacks() {
+        // [ext=mp4] alone also matches AV1-in-MP4 (YouTube serves it first), which breaks the
+        // "H.264, widely compatible" promise; the old chain stays behind it as the fallback.
+        for ((id, h) in listOf("best-1080" to 1080, "best-720" to 720)) {
+            val alternatives = DownloadPresets.byId(id).format.split('/')
+            assertEquals("bestvideo[height<=$h][vcodec^=avc1]+bestaudio[ext=m4a]", alternatives.first())
+            assertEquals("best", alternatives.last())
+            assertTrue(alternatives.contains("bestvideo[height<=$h][ext=mp4]+bestaudio[ext=m4a]"))
+        }
     }
 }
