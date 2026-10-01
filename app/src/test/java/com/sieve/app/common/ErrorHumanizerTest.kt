@@ -17,15 +17,16 @@ class ErrorHumanizerTest {
 
     @Test fun geo() =
         assertEquals(
-            "Not available in your region — Try again on a different network or VPN.",
+            "Not available in your region — Set a proxy under Settings → Network, or try another network.",
             ErrorHumanizer.humanize("ERROR: This video is geo restricted in your region"),
         )
 
-    @Test fun loginHintDoesNotMentionCookies() {
+    // Android has a cookies.txt import (Settings → Network → Cookies file) but no browser cookies.
+    @Test fun loginHintPointsAtTheCookiesFileSetting() {
         val s = ErrorHumanizer.humanize("ERROR: Sign in to confirm your age")
         assertTrue(s.startsWith("Age-restricted"), s)
-        assertTrue(s.endsWith("Sieve for Android can't sign in to sites yet."), s)
-        assertFalse(s.contains("cookie", ignoreCase = true), s)
+        assertTrue(s.endsWith("Import a cookies.txt from a signed-in browser under Settings → Network → Cookies file."), s)
+        assertFalse(s.contains("can't sign in", ignoreCase = true), s)
         assertFalse(s.contains("firefox", ignoreCase = true), s)
     }
 
