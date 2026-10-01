@@ -13,7 +13,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.sieve.app.di.AppGraph
-import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.service.JobToast
 import kotlinx.coroutines.launch
 
 /**
@@ -41,15 +41,9 @@ fun rememberAppSnackbarHost(): SnackbarHostState {
         runCatching {
             AppGraph.queue.state.collect { st ->
                 st.jobs.forEach { j ->
-                    val terminal = j.status == DownloadStatus.COMPLETED || j.status == DownloadStatus.FAILED
-                    if (terminal && seen.add(j.id)) {
-                        val msg = if (j.status == DownloadStatus.COMPLETED) {
-                            "Saved: ${j.title.ifBlank { "download" }}"
-                        } else {
-                            "Failed: ${ErrorHumanizer.humanize(j.error ?: "")}"
-                        }
-                        scope.launch { host.showSnackbar(msg) }
-                    }
+                    // Same wording as the system notification and the desktop toasts (kind-aware, names the item).
+                    val msg = JobToast.text(j)
+                    if (msg != null && seen.add(j.id)) scope.launch { host.showSnackbar(msg) }
                 }
             }
         }
