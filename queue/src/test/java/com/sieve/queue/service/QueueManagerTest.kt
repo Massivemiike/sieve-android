@@ -18,6 +18,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -263,6 +264,97 @@ class QueueManagerTest {
         gate.complete(Unit)                                              // release prepare
         m.state.first { it.job("a")?.status == DownloadStatus.PAUSED }
         assertEquals(DownloadStatus.PAUSED, m.state.value.job("a")!!.status)
+    }
+
+    // The engine's start-of-run hygiene forgets a cancel that arrived before its process existed, so the queue
+    // (the source of truth for cancel intent) must not let that download win.
+    @Test fun `a cancel that lands as the engine starts still wins over a download that finishes`() = runTest {
+        lateinit var m: QueueManager
+        // The user taps Cancel just as the engine starts; this port ignores it and runs to the end.
+        val port = FakeDownloadPort { id ->
+            flow {
+                m.cancel(id)
+                emit(EngineEvent.Progress(DownloadProgress(0.5f)))
+                emit(EngineEvent.Completed(0))
+            }
+        }
+        val (mgr, out) = manager(port)
+        m = mgr
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        withTimeout(5_000) { m.state.first { it.job("a")?.status?.isTerminal == true } }
+        assertEquals(DownloadStatus.CANCELLED, m.state.value.job("a")!!.status)
+        assertTrue("nothing may be finalized into the user's folder", out.finalized.isEmpty())
+        assertEquals(listOf("a"), out.discarded)
+    }
+
+    @Test fun `a cancel that landed before the process existed is re-sent once the engine is running`() = runTest {
+        lateinit var m: QueueManager
+        val killed = CompletableDeferred<Unit>()
+        var started = false
+        val port = object : DownloadPort {
+            override fun download(id: String, url: String, args: List<String>) = flow {
+                m.cancel(id)   // lands before the process exists: there is nothing to kill yet
+                started = true // ...and the engine's own start-of-run hygiene forgets it
+                emit(EngineEvent.Progress(DownloadProgress(0.1f)))
+                killed.await() // a long download, until a cancel reaches the running process
+                emit(EngineEvent.Cancelled)
+            }
+            override fun cancel(id: String): Boolean {
+                if (started) killed.complete(Unit)
+                return started
+            }
+        }
+        val (mgr, out) = manager(port)
+        m = mgr
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        withTimeout(5_000) { m.state.first { it.job("a")?.status?.isTerminal == true } }
+        assertEquals(DownloadStatus.CANCELLED, m.state.value.job("a")!!.status)
+        assertTrue(out.finalized.isEmpty())
+    }
+
+    @Test fun `a pause that lands as the engine starts is re-sent and the job lands PAUSED`() = runTest {
+        lateinit var m: QueueManager
+        val killed = CompletableDeferred<Unit>()
+        var started = false
+        val port = object : DownloadPort {
+            override fun download(id: String, url: String, args: List<String>) = flow {
+                m.pause(id)
+                started = true
+                emit(EngineEvent.Progress(DownloadProgress(0.1f)))
+                killed.await()
+                emit(EngineEvent.Cancelled)
+            }
+            override fun cancel(id: String): Boolean {
+                if (started) killed.complete(Unit)
+                return started
+            }
+        }
+        val (mgr, _) = manager(port)
+        m = mgr
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        withTimeout(5_000) { m.state.first { it.job("a")?.status == DownloadStatus.PAUSED } }
+    }
+
+    // A pause that arrives as the download finishes is not a cancel: the file is already there.
+    @Test fun `a pause that lands as the download finishes still completes it`() = runTest {
+        lateinit var m: QueueManager
+        val port = FakeDownloadPort { id ->
+            flow {
+                m.pause(id)
+                emit(EngineEvent.Progress(DownloadProgress(0.9f)))
+                emit(EngineEvent.Completed(0))
+            }
+        }
+        val (mgr, out) = manager(port)
+        m = mgr
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        withTimeout(5_000) { m.state.first { it.job("a")?.status?.isTerminal == true } }
+        assertEquals(DownloadStatus.COMPLETED, m.state.value.job("a")!!.status)
+        assertEquals(listOf("a"), out.finalized)
     }
 
     @Test fun `rehydrate reverts running to queued and re-drains`() = runTest {

@@ -179,6 +179,8 @@ class YtDlpEngineImpl(
     }
 
     override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = channelFlow {
+        // Only drops a stale id left by an earlier run of this job. A cancel that really predates this start is
+        // re-sent by the queue once the process is up (QueueManager.launchJob) and wins over a finished run there.
         cancelledIds.remove(id)
         ensureOutputDir(args)
         // The args can hold a proxy password or auth headers: logcat ends up in bug reports.
