@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 data class QueueUiState(val summary: QueueSummary, val jobs: List<QueueJob>) {
+    /** Completed + failed + cancelled rows: what "Clear finished" removes. */
+    val finished: Int get() = jobs.count { it.status.isTerminal }
+
     companion object {
         fun from(state: QueueState) =
             QueueUiState(QueueAggregator.summarize(state.jobs), state.jobs.sortedBy { it.position })
@@ -25,6 +28,8 @@ class QueueViewModel(
     private val onResume: (String) -> Unit = {},
     private val onRetry: (String) -> Unit = {},
     private val onCancel: (String) -> Unit = {},
+    private val onRemove: (String) -> Unit = {},
+    private val onClearFinished: () -> Unit = {},
 ) : ViewModel() {
 
     val state: StateFlow<QueueUiState> = stateSource
@@ -35,11 +40,16 @@ class QueueViewModel(
     fun resume(id: String) = onResume(id)
     fun retry(id: String) = onRetry(id)
     fun cancel(id: String) = onCancel(id)
+    fun remove(id: String) = onRemove(id)
+    fun clearFinished() = onClearFinished()
 
     companion object {
         fun from(): QueueViewModel {
             val q = AppGraph.queue
-            return QueueViewModel(q.state, { q.pause(it) }, { q.resume(it) }, { q.retry(it) }, { q.cancel(it) })
+            return QueueViewModel(
+                q.state, { q.pause(it) }, { q.resume(it) }, { q.retry(it) }, { q.cancel(it) },
+                { q.remove(it) }, { q.clearFinished() },
+            )
         }
     }
 }

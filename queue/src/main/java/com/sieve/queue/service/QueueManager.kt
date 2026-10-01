@@ -81,9 +81,41 @@ class QueueManager(
     suspend fun pause(id: String) { dispatch(QueueEvent.Pause(id)); killJob(id) }
     suspend fun resume(id: String) { dispatch(QueueEvent.Resume(id)); drain() }
     suspend fun cancel(id: String) {
-        val wasRunning = _state.value.job(id)?.status.let { it == DownloadStatus.RUNNING || it == DownloadStatus.PREPARING }
+        val before = _state.value.job(id)
+        val wasRunning = before?.status.let { it == DownloadStatus.RUNNING || it == DownloadStatus.PREPARING }
         dispatch(QueueEvent.Cancel(id))
         if (wasRunning) killJob(id) else drain()
+        // A paused job still owns its partial download; cancelling it from PAUSED has no terminal signal
+        // to trigger the usual discard.
+        if (before?.status == DownloadStatus.PAUSED) cleanupWorkDir(before)
+    }
+
+    /** Removes one finished row (completed / failed / cancelled). Live rows are ignored — cancel them first. */
+    suspend fun remove(id: String) {
+        val job = mutex.withLock {
+            val j = _state.value.job(id)?.takeIf { it.status.isTerminal } ?: return
+            applyLocked(QueueEvent.Remove(id))
+            j
+        }
+        cleanupWorkDir(job)
+    }
+
+    /** Removes every finished row. Running, queued and paused rows are never touched. */
+    suspend fun clearFinished() {
+        val removed = mutex.withLock {
+            val finished = _state.value.jobs.filter { it.status.isTerminal }
+            if (finished.isNotEmpty()) applyLocked(QueueEvent.ClearFinished)
+            finished
+        }
+        removed.forEach { cleanupWorkDir(it) }
+    }
+
+    /** Best-effort: a failed cleanup must never stop a row from going away. Never touches the saved output. */
+    private suspend fun cleanupWorkDir(job: QueueJob) {
+        withContext(NonCancellable) {
+            runCatching { output.cleanup(job) }
+                .onFailure { android.util.Log.w("SieveQueue", "work-dir cleanup failed for ${job.id}", it) }
+        }
     }
     suspend fun retry(id: String) { dispatch(QueueEvent.Retry(id)); drain() }
     suspend fun setGlobalPaused(paused: Boolean) { dispatch(QueueEvent.SetGlobalPaused(paused)); if (!paused) drain() }
@@ -194,11 +226,13 @@ class QueueManager(
                     try {
                         val loc = output.finalize(job, prepared)
                         android.util.Log.i("SieveFin", "finalize OK id=${job.id} -> ${loc.displayPath} uri=${loc.uri}")
+                        // Remember where the file landed (content Uri when known) so the row can open it.
+                        dispatch(QueueEvent.OutputSaved(job.id, loc.uri ?: loc.displayPath))
                     } catch (t: Throwable) {
                         android.util.Log.e("SieveFin", "finalize FAILED id=${job.id}", t)
                         throw t
                     }
-                    onCompleted(job)
+                    onCompleted(_state.value.job(job.id) ?: job)
                 }
             }
             is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) output.discard(job, prepared)

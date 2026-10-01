@@ -11,8 +11,9 @@ import kotlin.test.assertTrue
 
 class SafOutputProviderPrepareTest {
 
+    private var sinkSelections = 0
     private val selector = object : SinkSelector {
-        override suspend fun select(job: QueueJob): DestinationSink = FakeSink()
+        override suspend fun select(job: QueueJob): DestinationSink { sinkSelections++; return FakeSink() }
     }
 
     private fun job(id: String, template: String? = null) =
@@ -50,6 +51,23 @@ class SafOutputProviderPrepareTest {
         p.discard(job("j4"), prepared)
         assertEquals(1, fs.deleteCalls)
         assertTrue(!fs.exists("/files/work/j4"))
+    }
+
+    @Test fun `cleanup removes a leftover work dir without ever touching the destination`() = runTest {
+        val fs = FakeWorkDirFs()
+        fs.putFile("/files/work/j5", "clip.mp4.part", byteArrayOf(1, 2, 3))
+        val p = SafOutputProvider("/files", fs, selector)
+        p.cleanup(job("j5"))
+        assertTrue(!fs.exists("/files/work/j5"))
+        assertEquals(0, fs.listLeafNames("/files/work/j5").size)
+        assertEquals(0, sinkSelections) // the finished file lives in the sink; cleanup never reaches it
+    }
+
+    @Test fun `cleanup of a job with no work dir leaves nothing behind`() = runTest {
+        val fs = FakeWorkDirFs()
+        val p = SafOutputProvider("/files", fs, selector)
+        p.cleanup(job("never-ran"))
+        assertTrue(!fs.exists("/files/work/never-ran"))
     }
 
     @Test fun `discard tolerates an already-missing dir`() = runTest {

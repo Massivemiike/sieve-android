@@ -30,6 +30,8 @@ class QueueRepository private constructor(
     fun resume(id: String) { ensureServiceRunning(); scope.launch { manager.resume(id) } }
     fun cancel(id: String) { scope.launch { manager.cancel(id) } }
     fun retry(id: String) { ensureServiceRunning(); scope.launch { manager.retry(id) } }
+    fun remove(id: String) { scope.launch { manager.remove(id) } }
+    fun clearFinished() { scope.launch { manager.clearFinished() } }
 
     /** Follows a live (downloads, transcodes) concurrency source for the life of the app scope. */
     fun followLimits(limits: Flow<Pair<Int, Int>>) { scope.launch { manager.followLimits(limits) } }

@@ -176,6 +176,34 @@ class QueueReducerTest {
         assertEquals(4, r(QueueState(), QueueEvent.SetMaxTranscodes(99)).maxTranscodes)
     }
 
+    @Test fun `clear finished drops completed, failed and cancelled rows only`() {
+        val s = r(
+            QueueState(
+                jobs = listOf(
+                    dl("q", DownloadStatus.QUEUED), dl("p", DownloadStatus.PREPARING), dl("r", DownloadStatus.RUNNING),
+                    dl("z", DownloadStatus.PAUSED), tx("done", DownloadStatus.COMPLETED), dl("bad", DownloadStatus.FAILED),
+                    dl("x", DownloadStatus.CANCELLED),
+                ),
+            ),
+            QueueEvent.ClearFinished,
+        )
+        assertEquals(listOf("q", "p", "r", "z"), s.jobs.map { it.id })
+    }
+
+    @Test fun `clear finished on a queue with nothing finished changes nothing`() {
+        val before = QueueState(jobs = listOf(dl("a"), dl("b", DownloadStatus.RUNNING)))
+        assertEquals(before, r(before, QueueEvent.ClearFinished))
+    }
+
+    @Test fun `output saved records where the finished file landed`() {
+        val s = r(
+            QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING).copy(filePath = "/work/a/out.mp4"), dl("b"))),
+            QueueEvent.OutputSaved("a", "content://media/external/downloads/7"),
+        )
+        assertEquals("content://media/external/downloads/7", s.job("a")!!.filePath)
+        assertNull(s.job("b")!!.filePath)
+    }
+
     @Test fun `rehydrate reverts in-flight to QUEUED, leaves terminal alone`() {
         val s = r(
             QueueState(

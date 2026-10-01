@@ -16,7 +16,11 @@ class FakeClock(var t: Long = 1000L) : Clock {
     override fun nowMs() = t
 }
 
-class FakeOutputProvider(private val prepareGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null) : OutputLocationProvider {
+class FakeOutputProvider(
+    private val prepareGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
+    /** When set, finalize reports `<prefix><jobId>` as the saved file's Uri (null = the sink has no Uri). */
+    private val finalUriPrefix: String? = null,
+) : OutputLocationProvider {
     val prepared = mutableListOf<String>()
     val finalized = mutableListOf<String>()
     val discarded = mutableListOf<String>()
@@ -27,7 +31,7 @@ class FakeOutputProvider(private val prepareGate: kotlinx.coroutines.Completable
     }
     override suspend fun finalize(job: QueueJob, prepared: PreparedOutput): FinalLocation {
         finalized += job.id
-        return FinalLocation("/final/${job.id}", null)
+        return FinalLocation("/final/${job.id}", finalUriPrefix?.let { it + job.id })
     }
     override suspend fun discard(job: QueueJob, prepared: PreparedOutput) { discarded += job.id }
 }

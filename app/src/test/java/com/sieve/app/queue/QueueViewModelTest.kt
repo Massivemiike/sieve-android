@@ -50,6 +50,26 @@ class QueueViewModelTest {
         assertEquals(listOf("c", "b", "a"), ui.jobs.map { it.id })
     }
 
+    @Test fun finishedCountsCompletedFailedAndCancelledRowsOnly() {
+        val state = QueueState(
+            jobs = listOf(
+                job("q", DownloadStatus.QUEUED, 0), job("r", DownloadStatus.RUNNING, 1), job("p", DownloadStatus.PAUSED, 2),
+                job("ok", DownloadStatus.COMPLETED, 3), job("bad", DownloadStatus.FAILED, 4), job("x", DownloadStatus.CANCELLED, 5),
+            ),
+        )
+        assertEquals(3, QueueUiState.from(state).finished)
+        assertEquals(0, QueueUiState.from(QueueState(jobs = listOf(job("q", DownloadStatus.QUEUED, 0)))).finished)
+    }
+
+    @Test fun removeAndClearFinishedDelegateToCallbacks() {
+        val removed = mutableListOf<String>()
+        var cleared = 0
+        val vm = QueueViewModel(MutableStateFlow(QueueState()), onRemove = { removed += it }, onClearFinished = { cleared++ })
+        vm.remove("a"); vm.remove("b"); vm.clearFinished()
+        assertEquals(listOf("a", "b"), removed)
+        assertEquals(1, cleared)
+    }
+
     @Test fun actionsDelegateToCallbacks() {
         val paused = mutableListOf<String>()
         val cancelled = mutableListOf<String>()

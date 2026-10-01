@@ -48,6 +48,8 @@ object QueueReducer {
         }
         is QueueEvent.AutoRetryFired -> state   // pure no-op; the manager re-drains on this event
         is QueueEvent.Remove -> state.copy(jobs = state.jobs.filterNot { it.id == event.id })
+        QueueEvent.ClearFinished -> state.copy(jobs = state.jobs.filterNot { it.status.isTerminal })
+        is QueueEvent.OutputSaved -> mapJob(state, event.id) { it.copy(filePath = event.location) }
         is QueueEvent.SetGlobalPaused -> state.copy(globalPaused = event.paused)
         is QueueEvent.SetMaxDownloads -> state.copy(maxDownloads = event.n.coerceIn(QueueLimits.DOWNLOADS))
         is QueueEvent.SetMaxTranscodes -> state.copy(maxTranscodes = event.n.coerceIn(QueueLimits.TRANSCODES))
