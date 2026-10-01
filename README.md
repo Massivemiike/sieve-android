@@ -26,7 +26,7 @@ Sieve for Android is a Kotlin/Jetpack Compose port of the Sieve desktop app, bui
 
 - **52 FFmpeg presets** across H.264, HEVC, AV1, VP9, ProRes, DNxHR, audio-only (MP3 / AAC / Opus / FLAC / WAV), device targets, legacy DVD, and image (GIF / animated WebP) families.
 - **Hardware-accelerated encoding** via Android MediaCodec for H.264/HEVC, with automatic software fallback.
-- **Software encoding for everything**, powered by a self-built full-GPL FFmpeg (x264, x265, and more).
+- **Software encoding for everything**, powered by a self-built full-GPL FFmpeg (x264, x265, SVT-AV1, libvpx VP9, Opus, LAME MP3, libwebp).
 - **Simple, useful controls** — a Software / Hardware toggle, a quality (CRF) control, and audio loudness normalization.
 - **Custom presets** you can import and export.
 
@@ -126,7 +126,7 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 - **Persistence:** Room 2.6.1 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).
 - **yt-dlp engine:** `io.github.junkfood02.youtubedl-android:library:0.18.1` (GPL-3.0).
-- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; libx264 + libx265 + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
+- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; encoders: libx264, libx265, SVT-AV1 4.2.0 (`libsvtav1`), libvpx 1.17.0 (`libvpx-vp9`), Opus 1.6.1 (`libopus`), LAME 3.100 (`libmp3lame`), libwebp 1.6.0 (`libwebp` / `libwebp_anim`) + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
 
 ---
 

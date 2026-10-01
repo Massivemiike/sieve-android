@@ -2,24 +2,49 @@ WRITTEN OFFER OF SOURCE — FFmpeg and its GPL dependencies
 ==========================================================
 
 Sieve for Android bundles a self-built FFmpeg executable (packaged as
-libffmpeg.so and executed as a child process) statically linked with x264 and
-x265. FFmpeg is built with --enable-gpl --enable-version3, so the binary is
-licensed under the GNU General Public License, version 3 (see licenses/GPL.txt
-in this repository and the app's About screen).
+libsieveffmpeg.so and executed as a child process) statically linked with
+x264, x265, LAME (libmp3lame), Opus (libopus), libvpx (VP9), SVT-AV1 and libwebp.
+FFmpeg is built with --enable-gpl --enable-version3, so the binary is licensed
+under the GNU General Public License, version 3 (see licenses/GPL.txt in this
+repository and the app's About screen).
 
 Corresponding source
 --------------------
-The complete corresponding source for the bundled FFmpeg and its GPL
-dependencies is the exact upstream commit of each project listed below, plus
-the build recipe in transcode/build-ffmpeg/ffbuild.sh in this repository. All
-three are unmodified upstream checkouts (no local patches).
+The complete corresponding source for the bundled FFmpeg and its dependencies
+is the exact upstream commit or release tarball of each project listed below,
+plus the build recipe in transcode/build-ffmpeg/ffbuild.sh in this repository.
+All are unmodified upstream sources (no local patches).
+
+Git sources (pinned to an exact commit):
 
   FFmpeg   https://github.com/FFmpeg/FFmpeg.git
            commit 818cecc6e1afab932cf4d40ef0d7b8cd40311a17
+           (GPLv3 as built: --enable-gpl --enable-version3)
   x264     https://code.videolan.org/videolan/x264.git
            commit 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee
+           (GPL-2.0-or-later)
   x265     https://bitbucket.org/multicoreware/x265_git.git
            commit b81f650e21e8aacbe6a9ad04ce14aefc05b932c0
+           (GPL-2.0-or-later)
+
+Release tarballs (pinned to a version and verified against a SHA-256 in
+ffbuild.sh before use):
+
+  LAME 3.100 (libmp3lame; LGPL-2.0-or-later)
+           https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+           sha256 ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+  Opus 1.6.1 (libopus; BSD-3-Clause)
+           https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+           sha256 6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+  libvpx 1.17.0 (VP9; BSD-3-Clause + WebM patent grant)
+           https://github.com/webmproject/libvpx/archive/refs/tags/v1.17.0.tar.gz
+           sha256 1020f184046187baa2985dbde38e0691f49c44088bca7a1842b0236c6081dc0a
+  SVT-AV1 4.2.0 (libsvtav1; BSD-3-Clause-Clear + AOMedia Patent License 1.0)
+           https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v4.2.0/SVT-AV1-v4.2.0.tar.gz
+           sha256 c7b13c4a84bd3751aa35fcc72be13e6875467e7c2216879251a486e5b1e4e740
+  libwebp 1.6.0 (libwebp + libwebpmux; BSD-3-Clause + WebM patent grant)
+           https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
+           sha256 e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564
 
 Toolchain: Android NDK r27.3.13750724, minSdk API 26.
 ABIs built: arm64-v8a (device), x86_64 (emulator).
@@ -37,15 +62,25 @@ Exact FFmpeg configure line
     --extra-libs="-lm" \
     --enable-gpl --enable-version3 \
     --enable-libx264 --enable-libx265 \
+    --enable-libmp3lame --enable-libopus --enable-libvpx --enable-libsvtav1 --enable-libwebp \
     --enable-jni --enable-mediacodec \
     --disable-shared --enable-static \
     --disable-doc --disable-ffplay --disable-ffprobe \
     --enable-ffmpeg
 
+Each dependency is built as a static, position-independent library for API 26
+with the same NDK toolchain (libvpx is configured with --enable-vp9
+--disable-vp8 --enable-pic --disable-examples --disable-tools --disable-docs
+--disable-unit-tests; SVT-AV1 and libwebp are built with CMake using the NDK's
+android.toolchain.cmake; the exact options are in ffbuild.sh).
+
 To rebuild: run `bash transcode/build-ffmpeg/ffbuild.sh all` on a Linux host
-with the NDK at /opt/android-sdk/ndk/27.3.13750724. The script clones the exact
-repos above, applies the NDK libc++ pkg-config fix to x265.pc, and verifies 16KB
-LOAD alignment before emitting each ABI's libffmpeg.so.
+with the NDK at /opt/android-sdk/ndk/27.3.13750724 (override with NDK=...; set
+FF_ROOT=<dir> for a writable build directory). The script fetches the exact
+commits and tarballs above (checking each tarball's SHA-256), applies the NDK
+libc++ pkg-config fix to x265.pc, and verifies 16KB LOAD alignment and the
+presence of every --enable-lib* flag before emitting each ABI's
+libsieveffmpeg.so.
 
 This written offer is valid for three (3) years from the date of distribution
 of the corresponding binary.
