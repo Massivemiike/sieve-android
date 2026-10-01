@@ -307,6 +307,23 @@ class YtDlpEngineImplDownloadTest {
         assertEquals(1, events.count { it is EngineEvent.Completed })
     }
 
+    @Test fun drmOnlyMediaReportsTheDrmErrorNotTheEmptyFormatList() = runTest {
+        // --check-formats drops every DRM format; yt-dlp then says "Requested format is not available",
+        // which would read as a preset problem. The DRM error is the real cause.
+        val noFormats = "ERROR: [vimeo] 76979871: Requested format is not available. Use --list-formats for a list of available formats"
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(DRM_ERR), threw(noFormats))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(2, client.calls.size)
+        assertEquals(listOf<EngineEvent>(EngineEvent.Log(DRM_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
+    }
+
+    @Test fun drmOnlyMediaNonThrownPathAlsoReportsTheDrmError() = runTest {
+        val noFormats = "ERROR: [vimeo] 76979871: Requested format is not available."
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, DRM_ERR), exited(1, noFormats))))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(listOf<EngineEvent>(EngineEvent.Log(DRM_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
+    }
+
     @Test fun drmRetrySucceeds() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(threw(DRM_ERR), Result.success(ExecResult(0, "", "")))))
         val events = newEngine(client).download("id1", "https://example.com/v", args).toList()

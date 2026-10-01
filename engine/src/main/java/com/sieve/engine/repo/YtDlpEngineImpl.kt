@@ -162,6 +162,7 @@ class YtDlpEngineImpl(
             var runArgs = listOf("--encoding", "utf-8") + args
             // Each recovery runs at most once per download.
             val tried = mutableSetOf<String>()
+            var drmStderr: String? = null
             while (true) {
                 var exitCode = 0
                 var stderr = ""
@@ -218,20 +219,25 @@ class YtDlpEngineImpl(
                     // let yt-dlp test formats and fall back to a playable one.
                     if (DRM_PROTECTED.containsMatchIn(errs) && CHECK_FORMATS !in runArgs && tried.add("check-formats")) {
                         send(EngineEvent.Log("[retry] That format is DRM-locked — retrying with a playable one", null, false))
+                        drmStderr = stderr
                         runArgs = runArgs + CHECK_FORMATS
                         continue
                     }
                 }
 
-                // Final failure: only the LAST attempt is reported.
+                // Final failure: only the LAST attempt is reported — except when --check-formats found
+                // nothing playable: its "Requested format is not available" would blame the preset, so
+                // the DRM error that started the retry is the one to show.
+                val drmOnly = drmStderr?.takeIf { REQUESTED_FORMAT.containsMatchIn(SiteRules.errorText(stderr)) }
                 if (thrown != null) {
                     android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)}")
-                    send(EngineEvent.Log(thrown.message ?: "download failed", null, true))
+                    send(EngineEvent.Log(drmOnly ?: thrown.message ?: "download failed", null, true))
                     send(EngineEvent.Completed(1))
                 } else {
                     // Same contract as the thrown path: the failure's text travels as an error Log so
                     // the queue can show and classify the real cause, not just the exit code.
-                    if (stderr.isNotBlank()) send(EngineEvent.Log(stderr, null, true))
+                    val text = drmOnly ?: stderr
+                    if (text.isNotBlank()) send(EngineEvent.Log(text, null, true))
                     send(EngineEvent.Completed(exitCode))
                 }
                 return@withContext
@@ -279,5 +285,6 @@ class YtDlpEngineImpl(
         const val SETTLED_URL_CAP = 1000
         const val CHECK_FORMATS = "--check-formats"
         val DRM_PROTECTED = Regex("DRM protected", RegexOption.IGNORE_CASE)
+        val REQUESTED_FORMAT = Regex("Requested format is not available", RegexOption.IGNORE_CASE)
     }
 }
