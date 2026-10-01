@@ -85,6 +85,12 @@ fun AboutRoute() {
             item { LicenseCard("GNU GPL v3 (FFmpeg + youtubedl-android)", "licenses/GPL.txt", "license_gpl") }
             item { LicenseCard("yt-dlp (Unlicense / public domain)", "licenses/YT_DLP_LICENSE.txt", "license_ytdlp") }
             item { LicenseCard("FFmpeg — written offer for source", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
+            item {
+                LicenseCard(
+                    "Browser impersonation — curl_cffi, curl-impersonate & bundled libraries",
+                    "licenses/IMPERSONATE_LICENSES.txt", "license_impersonate",
+                )
+            }
             item { LicenseCard("Inter & JetBrains Mono (SIL OFL)", "licenses/OFL_Fonts.txt", "license_fonts") }
 
             item {

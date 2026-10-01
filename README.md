@@ -127,6 +127,7 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).
 - **yt-dlp engine:** `io.github.junkfood02.youtubedl-android:library:0.18.1` (GPL-3.0).
 - **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; libx264 + libx265 + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
+- **Browser impersonation:** **curl_cffi 0.16.3** with **libcurl-impersonate 2.2.2** fused in statically (+ cffi 2.0.0, certifi), cross-compiled (NDK r29, 16KB-aligned) for youtubedl-android's CPython 3.12 on arm64-v8a and unpacked into its site-packages at startup, so yt-dlp can present a real browser's TLS fingerprint like the desktop app's yt-dlp.exe. Build script: `engine/build-impersonate/build.sh`.
 
 ---
 
@@ -150,6 +151,7 @@ Sieve is built on the work of others, with thanks to:
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** — the media extraction and download engine (released into the public domain under the Unlicense).
 - **[youtubedl-android](https://github.com/yausername/youtubedl-android)** by **yausername** — the Android packaging and runtime bindings for yt-dlp (GPLv3).
 - **[FFmpeg](https://ffmpeg.org/)** — media decoding, encoding, and transcoding.
+- **[curl_cffi](https://github.com/lexiforest/curl_cffi)** and **[curl-impersonate](https://github.com/lexiforest/curl-impersonate)** by **lexiforest** — browser TLS impersonation for yt-dlp (MIT; bundled library notices in the app's About screen).
 - **[Seal](https://github.com/JunkFood02/Seal)** and **[YTDLnis](https://github.com/deniscerri/ytdlnis)** — reference applications whose approaches informed this project.
 
 ---
