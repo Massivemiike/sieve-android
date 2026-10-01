@@ -16,12 +16,15 @@ import kotlinx.coroutines.flow.flow
 
 /**
  * Collapses the two module cold flows (`EngineEvent` / `TranscodeEvent`) into one `JobSignal` stream,
- * encoding the terminal asymmetries: `Completed(exit≠0)` → Failed; transcode `Done(nonzero)` is a
- * cancel when a `cancelReason` is present else a failure; ffmpeg progress → indeterminate when the
- * duration is null. First terminal is authoritative — later events are dropped.
+ * encoding the terminal asymmetries: `Completed(exit≠0)` → Failed; a transcode `Done` is a cancel
+ * whenever a `cancelReason` is present (whatever its exit code), else Succeeded/Failed by exit code;
+ * ffmpeg progress → indeterminate when the duration is null. First terminal is authoritative — later
+ * events are dropped.
  *
  * `cancelReasonSupplier` is read when a terminal cancel is seen; the QueueManager stamps the reason
- * before killing, so it is present by the time Cancelled/Done arrives.
+ * before killing, so it is present by the time Cancelled/Done arrives. For a transcode the reason is
+ * checked BEFORE the exit code: Cancel/Pause asks ffmpeg to quit with `q`, which it treats as a normal
+ * stop — it finalizes the truncated output and exits 0, which must not read as a finished job.
  */
 class JobDriver(
     private val downloadPort: DownloadPort,
@@ -93,8 +96,8 @@ class JobDriver(
                     terminated = true
                     val r = reason()
                     val outcome = when {
-                        ev.exitCode == 0 -> Outcome.Succeeded
                         r != null -> Outcome.Cancelled(r)
+                        ev.exitCode == 0 -> Outcome.Succeeded
                         else -> Outcome.Failed(
                             FailureInfo(ev.errorSummary ?: "ffmpeg exited ${ev.exitCode}", exitCode = ev.exitCode, stderrTail = ev.stderrTail),
                         )

@@ -138,6 +138,32 @@ class JobDriverTest {
         }
     }
 
+    // ffmpeg treats the 'q' that Cancel/Pause writes as a normal stop: it finalizes a truncated file and
+    // exits 0. The stamped reason must win over the exit code or a cancelled job is saved as finished.
+    @Test fun `transcode Done 0 with USER_CANCEL is Cancelled not Succeeded`() = runTest {
+        val ports = FakeTranscodePort { flow { emit(TranscodeEvent.Done(0, null, "")) } }
+        JobDriver(FakeDownloadPort(), ports).drive(tx("a", 10.0)) { CancelReason.USER_CANCEL }.test {
+            assertEquals(Outcome.Cancelled(CancelReason.USER_CANCEL), (awaitItem() as JobSignal.Terminal).outcome)
+            awaitComplete()
+        }
+    }
+
+    @Test fun `transcode Done 0 with PAUSE is Cancelled not Succeeded`() = runTest {
+        val ports = FakeTranscodePort { flow { emit(TranscodeEvent.Done(0, null, "")) } }
+        JobDriver(FakeDownloadPort(), ports).drive(tx("a", 10.0)) { CancelReason.PAUSE }.test {
+            assertEquals(Outcome.Cancelled(CancelReason.PAUSE), (awaitItem() as JobSignal.Terminal).outcome)
+            awaitComplete()
+        }
+    }
+
+    @Test fun `transcode Done 0 without cancelReason is Succeeded`() = runTest {
+        val ports = FakeTranscodePort { flow { emit(TranscodeEvent.Done(0, null, "")) } }
+        JobDriver(FakeDownloadPort(), ports).drive(tx("a", 10.0)) { null }.test {
+            assertEquals(Outcome.Succeeded, (awaitItem() as JobSignal.Terminal).outcome)
+            awaitComplete()
+        }
+    }
+
     @Test fun `transcode Done nonzero without cancelReason is Failed`() = runTest {
         val ports = FakeTranscodePort { flow { emit(TranscodeEvent.Done(1, "bad codec", "tail")) } }
         JobDriver(FakeDownloadPort(), ports).drive(tx("a", 10.0)) { null }.test {
