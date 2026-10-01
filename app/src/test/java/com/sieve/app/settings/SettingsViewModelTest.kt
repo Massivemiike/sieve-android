@@ -98,6 +98,7 @@ class SettingsViewModelTest {
         vm.updateEngine()
         val s = vm.state.first { it.updateMessage != null }
         assertEquals("Wait for downloads to finish before updating yt-dlp.", s.updateMessage)
+        assertTrue(s.updateMessageIsError)                  // it is a refusal, shown in the error colour
         assertFalse(s.updating)
         assertEquals(0, engine.updateCalls)
     }
@@ -109,6 +110,7 @@ class SettingsViewModelTest {
         vm.updateEngine()
         val s = vm.state.first { it.updateMessage != null }
         assertEquals("Engine updated", s.updateMessage)
+        assertFalse(s.updateMessageIsError)
         assertFalse(s.updating)
         assertEquals(1, engine.updateCalls)
     }
@@ -122,6 +124,7 @@ class SettingsViewModelTest {
         assertTrue(s.updateMessage!!.startsWith("Update failed"), s.updateMessage)
         assertTrue("failed to update youtube-dl" in s.updateMessage!!, s.updateMessage)
         assertFalse(s.updateMessage!!.contains("Engine updated"))
+        assertTrue(s.updateMessageIsError)
     }
 
     @Test
@@ -131,6 +134,27 @@ class SettingsViewModelTest {
         vm.updateEngine()
         val s = vm.state.first { it.updateMessage != null }
         assertEquals("Update failed: boom", s.updateMessage)
+        assertTrue(s.updateMessageIsError)
+    }
+
+    @Test
+    fun theUpdateMessageClearsOnDismissAndOnTheNextUpdate() = runTest {
+        val vm = newVm(FakeEngine { UpdateResult(true, "DONE") }, downloadActive = { true })
+        vm.updateEngine()
+        vm.state.first { it.updateMessage != null }
+        vm.dismissUpdateMessage()
+        val cleared = vm.state.first { it.updateMessage == null }
+        assertFalse(cleared.updateMessageIsError)                           // the colour flag goes with the text
+
+        vm.updateEngine()                                                   // blocked again: the message is back...
+        assertTrue(vm.state.first { it.updateMessage != null }.updateMessageIsError)
+    }
+
+    @Test
+    fun updateFailureWithBlankDetailIsJustUpdateFailed() = runTest {
+        val vm = newVm(FakeEngine { UpdateResult(false, "  ") })
+        vm.updateEngine()
+        assertEquals("Update failed", vm.state.first { it.updateMessage != null }.updateMessage)
     }
 
     @Test

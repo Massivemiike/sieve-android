@@ -76,6 +76,7 @@ fun SettingsRoute(
         state, grant, vm::setThemeMode, vm::setAccent, vm::setDefaultPreset, vm::setMaxDownloads, vm::setMaxTranscodes,
         vm::updateEngine, vm::reset, onOpenAbout,
         updatesSlot = { com.sieve.app.update.UpdatesSection() },
+        onDismissUpdateMessage = vm::dismissUpdateMessage,
         network = NetworkActions(
             onProxy = vm::setProxy, onUserAgent = vm::setUserAgent, onSpeedLimit = vm::setSpeedLimit,
             onPickCookies = pickCookies, onRemoveCookies = vm::removeCookies, onDismissCookiesMessage = vm::dismissCookiesMessage,
@@ -109,6 +110,7 @@ fun SettingsScreen(
     onOpenAbout: () -> Unit,
     updatesSlot: @Composable () -> Unit = {},
     network: NetworkActions = NetworkActions(),
+    onDismissUpdateMessage: () -> Unit = {},
 ) {
     var editing by remember { mutableStateOf<NetField?>(null) }
     Scaffold(topBar = {
@@ -185,6 +187,14 @@ fun SettingsScreen(
                         Column(Modifier.weight(1f)) {
                             Text("yt-dlp", style = MaterialTheme.typography.bodyMedium)
                             Text(state.engineVersion ?: "unknown", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // The Update result ("Engine updated" / why it failed / why it was refused); tap to dismiss.
+                            state.updateMessage?.let {
+                                Text(
+                                    it, style = MaterialTheme.typography.labelSmall,
+                                    color = if (state.updateMessageIsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.clickable(onClick = onDismissUpdateMessage).testTag("update_message"),
+                                )
+                            }
                         }
                         OutlinedButton(onClick = onUpdateEngine, enabled = !state.updating, modifier = Modifier.testTag("update_engine")) {
                             Text(if (state.updating) "Updating…" else "Update")
