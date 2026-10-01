@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.sieve.app.di.AppGraph
 import com.sieve.queue.core.DownloadStatus
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -39,6 +40,9 @@ fun rememberAppSnackbarHost(): SnackbarHostState {
     LaunchedEffect(Unit) {
         val seen = mutableSetOf<String>()
         runCatching {
+            // The queue is restored from the last session: rows already finished then are history, not news.
+            AppGraph.queue.rehydrated.first { it }
+            AppGraph.queue.state.value.jobs.filter { it.status.isTerminal }.mapTo(seen) { it.id }
             AppGraph.queue.state.collect { st ->
                 st.jobs.forEach { j ->
                     val terminal = j.status == DownloadStatus.COMPLETED || j.status == DownloadStatus.FAILED

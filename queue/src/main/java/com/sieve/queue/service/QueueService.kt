@@ -15,6 +15,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.sample
@@ -22,8 +23,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Foreground host for the queue. Promotes to foreground within 5 s of start, mirrors state to the
- * notification (throttled to ≤2/s), rehydrates on a START_STICKY null-intent restart, honors the
- * Android 15 dataSync timeout by pausing active work, and stops itself when the queue drains.
+ * notification (throttled to ≤2/s), honors the Android 15 dataSync timeout by pausing active work, and
+ * stops itself when the queue drains. The persisted queue is restored by [QueueRepository.create] when the
+ * process starts (a START_STICKY restart included); the idle check waits for that load to finish.
  */
 class QueueService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -39,10 +41,7 @@ class QueueService : Service() {
         watchIdle()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) serviceScope.launch { repo.rehydrate() } // START_STICKY recreate → rehydrate
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     private fun startForegroundCompat(n: android.app.Notification) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -66,7 +65,10 @@ class QueueService : Service() {
 
     private fun watchIdle() {
         serviceScope.launch {
-            repo.state.map { QueueAggregator.summarize(it.jobs).isIdle }.distinctUntilChanged()
+            // Until the persisted rows are loaded the in-memory queue is empty, i.e. "idle": judging it then
+            // would stop a restarted service before the downloads it was restarted for are even restored.
+            combine(repo.rehydrated, repo.state.map { QueueAggregator.summarize(it.jobs).isIdle }) { loaded, idle -> loaded && idle }
+                .distinctUntilChanged()
                 .collect { idle ->
                     if (idle) {
                         ServiceCompat.stopForeground(this@QueueService, ServiceCompat.STOP_FOREGROUND_REMOVE)

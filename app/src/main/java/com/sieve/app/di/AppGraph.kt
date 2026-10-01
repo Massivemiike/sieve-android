@@ -110,7 +110,7 @@ object AppGraph {
             onCompleted = { QueueNotification.postDone(app, it) },
             onFailed = { QueueNotification.postDone(app, it) },
         )
-        queue = QueueRepository.create(app, manager, appScope)
+        queue = QueueRepository.create(app, manager, appScope) // also restores the persisted queue, once
         queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })
         autoUpdateYtDlp(ioScope)
         initialized = true

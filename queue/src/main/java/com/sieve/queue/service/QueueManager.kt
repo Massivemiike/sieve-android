@@ -57,6 +57,13 @@ class QueueManager(
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<QueueState> = _state.asStateFlow()
 
+    private val _rehydrated = MutableStateFlow(false)
+    /**
+     * True once the persisted rows are in [state] (or could not be read). Until then an empty queue only means
+     * "not loaded yet" — a restarted service must not read it as idle and stop itself.
+     */
+    val rehydrated: StateFlow<Boolean> = _rehydrated.asStateFlow()
+
     private val mutex = Mutex()
     private val runningJobs = ConcurrentHashMap<String, Job>()
     private lateinit var scope: CoroutineScope
@@ -139,10 +146,37 @@ class QueueManager(
         limits.distinctUntilChanged().collect { (downloads, transcodes) -> setLimits(downloads, transcodes) }
     }
 
+    /**
+     * Loads the persisted queue, ONCE per process (later calls are no-ops): finished rows come back as they
+     * were, work the dead process left in flight (running / preparing / paused) comes back QUEUED, as on
+     * desktop. It merges into the live state rather than replacing it, so a job enqueued — or already
+     * running — before the load finished is neither dropped nor reverted. A store that cannot be read
+     * leaves the queue empty but still ends the load, so nothing waits on [rehydrated] forever.
+     */
     suspend fun rehydrate() {
-        val loaded = persistence.loadAll()
-        mutex.withLock { _state.value = _state.value.copy(jobs = loaded) }
-        dispatch(QueueEvent.Rehydrate)
+        if (_rehydrated.value) return
+        val loaded = try {
+            persistence.loadAll()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            android.util.Log.e("SieveQueue", "loading the persisted queue failed", t)
+            emptyList()
+        }
+        mutex.withLock {
+            if (_rehydrated.value) return // another caller finished the load while this one was reading
+            val before = _state.value
+            val fresh = loaded.filter { before.job(it.id) == null }
+            val restored = QueueReducer.reduce(QueueState(jobs = fresh), QueueEvent.Rehydrate).jobs
+            _state.value = before.copy(jobs = before.jobs + restored)
+            withContext(NonCancellable) {
+                val changed = restored.filter { r -> fresh.first { it.id == r.id } != r }
+                // Best-effort: the rows are already QUEUED in memory and persist with their next change.
+                if (changed.isNotEmpty()) runCatching { persistence.upsertAll(changed) }
+                    .onFailure { android.util.Log.w("SieveQueue", "persisting the restored rows failed", it) }
+            }
+            _rehydrated.value = true
+        }
     }
 
     fun start(scope: CoroutineScope) {
