@@ -85,8 +85,12 @@ class DownloadViewModel(
         _state.value = _state.value.copy(analyzing = true, error = null, errorHint = null)
         viewModelScope.launch {
             // The cookies file is anonymous-first inside the engine: it is only tried when the site asks for a login.
-            val cookies = engineSettings().cookiesFile.ifBlank { null }
-            when (val outcome = engine.analyze(url, null, cookies)) {
+            // Proxy and user-agent go with it, so reading the link leaves the phone the way the download will.
+            val settings = engineSettings()
+            val outcome = engine.analyze(
+                url, null, settings.cookiesFile.ifBlank { null }, settings.proxy.ifBlank { null }, settings.userAgent.ifBlank { null },
+            )
+            when (outcome) {
                 is AnalyzeOutcome.Success ->
                     _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, error = null, errorHint = null)
                 is AnalyzeOutcome.Failure -> {

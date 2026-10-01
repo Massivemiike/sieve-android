@@ -86,6 +86,9 @@ class YtDlpEngineImpl(
 
     private class Analyzed(val info: VideoInfo, val used: String)
 
+    /** The Network settings that apply to reading a link too, so it goes out the way the download will. */
+    private class AnalyzeNet(val proxy: String?, val userAgent: String?)
+
     /**
      * One analyze attempt; throws on non-zero exit, timeout or unparseable output. The library
      * throws on any non-zero exit (message = full stderr), so both a thrown failure and an
@@ -94,13 +97,15 @@ class YtDlpEngineImpl(
      * once the engine lock is held (the wait behind an update is not the site's fault), and a caller
      * that gives up kills the process too, so it can't keep running and hold an analyze permit.
      */
-    private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): VideoInfo = coroutineScope {
+    private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): VideoInfo = coroutineScope {
         val id = "analyze-${analyzeSeq.incrementAndGet()}"
         val opts = buildList {
             add("--encoding"); add("utf-8")
             add("-J"); add("--flat-playlist"); add("-I"); add("1:$ANALYZE_ENTRY_CAP")
+            if (!net.proxy.isNullOrBlank()) { add("--proxy"); add(net.proxy) }
             if (!cookiesBrowser.isNullOrBlank()) { add("--cookies-from-browser"); add(cookiesBrowser) }
             if (!cookiesFile.isNullOrBlank()) { add("--cookies"); add(cookiesFile) }
+            if (!net.userAgent.isNullOrBlank()) { add("--user-agent"); add(net.userAgent) }
         }
         val timedOut = AtomicBoolean(false)
         val finished = AtomicBoolean(false)
@@ -143,26 +148,33 @@ class YtDlpEngineImpl(
     }
 
     /** [runAnalyze] plus the alternate-URL retry (Vimeo player form) when the site rejects the first form. */
-    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?, cookiesFile: String? = null): Analyzed {
+    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): Analyzed {
         try {
-            return Analyzed(runAnalyze(url, cookiesBrowser, cookiesFile), url)
+            return Analyzed(runAnalyze(url, cookiesBrowser, cookiesFile, net), url)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             val stderr = (e as? AnalyzeException)?.stderr ?: e.message
             val alt = SiteRules.fallbackUrl(url, SiteRules.errorText(stderr)) ?: throw e
             // The alternate form's answer is the more useful error when it fails too.
-            return Analyzed(runAnalyze(alt, cookiesBrowser, cookiesFile), alt)
+            return Analyzed(runAnalyze(alt, cookiesBrowser, cookiesFile, net), alt)
         }
     }
 
-    override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = withContext(io) {
+    override suspend fun analyze(
+        url: String,
+        cookiesBrowser: String?,
+        cookiesFile: String?,
+        proxy: String?,
+        userAgent: String?,
+    ): AnalyzeOutcome = withContext(io) {
+        val net = AnalyzeNet(proxy, userAgent)
         gate.withPermit {
-            val first = analyzeAttempt(url, cookiesBrowser, cookiesFile = null)
+            val first = analyzeAttempt(url, cookiesBrowser, cookiesFile = null, net)
             // Anonymous first (the desktop's rule for hosts where cookies hurt, applied to the cookies file
             // everywhere): the file only gets one go, and only when the site asked for a login.
             if (first is AnalyzeOutcome.Failure && !cookiesFile.isNullOrBlank() && SiteRules.looksLoginRequired(first.message)) {
-                val withFile = analyzeAttempt(url, cookiesBrowser, cookiesFile)
+                val withFile = analyzeAttempt(url, cookiesBrowser, cookiesFile, net)
                 if (withFile is AnalyzeOutcome.Success) withFile else first // the original error is the useful one
             } else {
                 first
@@ -171,14 +183,14 @@ class YtDlpEngineImpl(
     }
 
     /** One analyze (browser cookies with their anonymous fallback, then the player-URL fallback), see [analyze]. */
-    private suspend fun analyzeAttempt(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+    private suspend fun analyzeAttempt(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): AnalyzeOutcome {
         val normalized = SiteRules.normalizeUrl(url)
         val hadCookies = !cookiesBrowser.isNullOrBlank()
         return try {
-            val first = analyzeSettling(normalized, cookiesBrowser, cookiesFile)
+            val first = analyzeSettling(normalized, cookiesBrowser, cookiesFile, net)
             // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
             if (hadCookies && StoryboardDetector.hasOnlyStoryboards(first.info)) {
-                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile, net) }.getOrNull()
                 if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback.info)) {
                     rememberSettled(url, normalized, fallback.used)
                     return AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
@@ -192,7 +204,7 @@ class YtDlpEngineImpl(
         } catch (err: Exception) {
             if (hadCookies) {
                 // The cookie attempt failed outright — retry without, returned unconditionally.
-                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile, net) }.getOrNull()
                 if (fallback != null) {
                     rememberSettled(url, normalized, fallback.used)
                     AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))

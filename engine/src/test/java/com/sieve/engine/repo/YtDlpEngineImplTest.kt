@@ -162,6 +162,42 @@ class YtDlpEngineImplAnalyzeTest {
         assertEquals(1, client.calls.size)
     }
 
+    // ---- proxy + user agent: link analysis leaves the phone the way the download will ----
+
+    @Test fun analyzePassesTheProxyAndUserAgentOnEveryAttempt() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt", "socks5://127.0.0.1:1080", "SieveTest/1.0")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(2, client.calls.size) // the anonymous try, then the cookies.txt try
+        for (call in client.calls) {
+            assertEquals("socks5://127.0.0.1:1080", call.options[call.options.indexOf("--proxy") + 1])
+            assertEquals("SieveTest/1.0", call.options[call.options.indexOf("--user-agent") + 1])
+        }
+    }
+
+    @Test fun analyzeWithoutNetworkSettingsSendsNeitherFlag() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        newEngine(client).analyze("https://example.com/v", null)
+        val opts = client.calls.single().options
+        assertFalse("--proxy" in opts)
+        assertFalse("--user-agent" in opts)
+    }
+
+    @Test fun aBlankProxyOrUserAgentIsNotSent() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        newEngine(client).analyze("https://example.com/v", null, null, "  ", "")
+        val opts = client.calls.single().options
+        assertFalse("--proxy" in opts)
+        assertFalse("--user-agent" in opts)
+    }
+
+    @Test fun theVimeoPlayerRetryKeepsTheProxy() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(VIMEO_WALL), ok(realJson))))
+        newEngine(client).analyze(VIMEO_PAGE, null, null, "http://proxy:8080", null)
+        assertEquals(listOf(VIMEO_PAGE, VIMEO_PLAYER), client.calls.map { it.url })
+        assertTrue(client.calls.all { "http://proxy:8080" in it.options })
+    }
+
     @Test fun analyzeOptionsAreFlatCappedUtf8AndKeepWarnings() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
         newEngine(client).analyze("https://example.com/v", null)

@@ -43,7 +43,8 @@ class SettingsViewModelTest {
 
     private class FakeEngine(private val update: () -> UpdateResult = { throw NotImplementedError() }) : YtDlpEngine {
         var updateCalls = 0
-        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = throw NotImplementedError()
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?, proxy: String?, userAgent: String?): AnalyzeOutcome =
+            throw NotImplementedError()
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"

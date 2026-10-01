@@ -38,8 +38,11 @@ class DownloadViewModelTest {
     private class FakeEngine(var outcome: AnalyzeOutcome) : YtDlpEngine {
         /** The cookies file each analyze call was given. */
         val analyzeCookies = mutableListOf<String?>()
-        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+        /** The (proxy, user-agent) each analyze call was given. */
+        val analyzeNetwork = mutableListOf<Pair<String?, String?>>()
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?, proxy: String?, userAgent: String?): AnalyzeOutcome {
             analyzeCookies += cookiesFile
+            analyzeNetwork += proxy to userAgent
             return outcome
         }
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
@@ -235,6 +238,25 @@ class DownloadViewModelTest {
         vm.onUrlChange("https://x/y")
         vm.analyze(); advanceUntilIdle()
         assertEquals(listOf<String?>(null), engine.analyzeCookies)
+    }
+
+    @Test fun analyzeHandsTheEngineTheProxyAndUserAgent() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(
+            engine, { }, idGen = { "id" },
+            engineSettings = { com.sieve.engine.args.EngineSettings(proxy = "socks5://127.0.0.1:1080", userAgent = "SieveTest/1.0") },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>("socks5://127.0.0.1:1080" to "SieveTest/1.0"), engine.analyzeNetwork)
+    }
+
+    @Test fun analyzeSendsNoProxyOrUserAgentWhenNoneIsSet() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>(null to null), engine.analyzeNetwork)
     }
 
     // ---- default / last-used preset ----
