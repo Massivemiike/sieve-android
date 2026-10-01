@@ -113,6 +113,7 @@ fun SettingsScreen(
     onDismissUpdateMessage: () -> Unit = {},
 ) {
     var editing by remember { mutableStateOf<NetField?>(null) }
+    var confirmReset by remember { mutableStateOf(false) }
     Scaffold(topBar = {
         Text("Settings", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(16.dp))
     }) { padding ->
@@ -215,12 +216,14 @@ fun SettingsScreen(
             }
 
             item {
-                OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth().padding(top = 12.dp).testTag("reset_btn")) {
+                OutlinedButton(onClick = { confirmReset = true }, modifier = Modifier.fillMaxWidth().padding(top = 12.dp).testTag("reset_btn")) {
                     Text("Reset settings")
                 }
             }
         }
     }
+
+    if (confirmReset) ResetDialog(onConfirm = { confirmReset = false; onReset() }, onDismiss = { confirmReset = false })
 
     when (editing) {
         NetField.PROXY -> TextEditDialog(
@@ -237,6 +240,24 @@ fun SettingsScreen(
         )
         null -> Unit
     }
+}
+
+/** Asks before Reset: it also deletes the imported cookies.txt and the proxy, which cannot be undone. */
+@Composable
+private fun ResetDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Reset all settings") },
+        text = {
+            Text(
+                "Theme, accent, default format, max downloads and transcodes, proxy, user-agent and speed limit go back to " +
+                    "their defaults, and the cookies.txt imported into Sieve is removed (your original file is not touched). " +
+                    "History and downloaded files are not affected.",
+            )
+        },
+        confirmButton = { TextButton(onClick = onConfirm, modifier = Modifier.testTag("reset_confirm")) { Text("Reset") } },
+        dismissButton = { TextButton(onClick = onDismiss, modifier = Modifier.testTag("reset_cancel")) { Text("Cancel") } },
+    )
 }
 
 /** A label with its current value; tapping opens the editor. Long values (a user-agent) ellipsize. */

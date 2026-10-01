@@ -47,7 +47,31 @@ class SettingsScreenTest {
 
         rule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("reset_btn"))
         rule.onNodeWithTag("reset_btn").performClick()
+        assertEquals(0, reset)                                   // asks first: it also deletes the cookies.txt and the proxy
+        rule.onNodeWithText("Reset all settings").assertExists()
+        rule.onNodeWithTag("reset_confirm").performClick()
         assertEquals(1, reset)
+        rule.onNodeWithText("Reset all settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun cancellingTheResetConfirmationChangesNothing() {
+        var reset = 0
+        rule.setContent {
+            SieveTheme {
+                SettingsScreen(
+                    state = SettingsUiState(), onGrant = {}, onTheme = {}, onAccent = {}, onDefaultPreset = {},
+                    onMaxDownloads = {}, onMaxTranscodes = {}, onUpdateEngine = {}, onReset = { reset++ }, onOpenAbout = {},
+                )
+            }
+        }
+
+        rule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("reset_btn"))
+        rule.onNodeWithTag("reset_btn").performClick()
+        rule.onNodeWithText("History and downloaded files are not affected.", substring = true).assertExists()
+        rule.onNodeWithTag("reset_cancel").performClick()
+        assertEquals(0, reset)
+        rule.onNodeWithText("Reset all settings").assertDoesNotExist()
     }
 
     @Test
