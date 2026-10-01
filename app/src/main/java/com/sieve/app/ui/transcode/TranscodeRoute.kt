@@ -50,6 +50,7 @@ import com.sieve.app.ui.common.SieveChip
 import com.sieve.app.ui.common.rememberOpenDocument
 import com.sieve.transcode.detect.EncoderKind
 import com.sieve.transcode.model.TranscodePreset
+import kotlin.math.roundToInt
 
 @Composable
 fun TranscodeRoute(
@@ -120,17 +121,27 @@ fun TranscodeScreen(
             }
             item {
                 Column(Modifier.padding(top = 4.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("Quality (CRF)", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.weight(1f))
-                        Text("${state.crf}", style = MaterialTheme.typography.labelMedium, color = cs.primary)
+                    // Only presets that build a `-crf` have a quality knob (as on Windows). It starts on the
+                    // preset's own value and counts as an override only once the user moves it off that.
+                    state.shownCrf?.let { crf ->
+                        val overridden = state.crfOverride != null && crf != state.presetCrf
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Quality (CRF)", style = MaterialTheme.typography.bodyMedium)
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                if (overridden) "$crf" else "$crf · preset",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (overridden) cs.primary else cs.onSurfaceVariant,
+                                modifier = Modifier.testTag("crf_value"),
+                            )
+                        }
+                        Slider(
+                            value = crf.toFloat(),
+                            onValueChange = { onCrf(it.roundToInt()) },
+                            valueRange = 1f..state.crfMax.toFloat(),
+                            modifier = Modifier.testTag("crf_slider"),
+                        )
                     }
-                    Slider(
-                        value = state.crf.toFloat(),
-                        onValueChange = { onCrf(it.toInt()) },
-                        valueRange = 14f..32f,
-                        modifier = Modifier.testTag("crf_slider"),
-                    )
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Text("Normalize audio", style = MaterialTheme.typography.bodyMedium)
                         Spacer(Modifier.weight(1f))
@@ -139,15 +150,18 @@ fun TranscodeScreen(
                 }
             }
             item {
-                Button(
-                    onClick = onStart,
-                    enabled = state.canStart,
-                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("start_btn"),
-                    shape = RoundedCornerShape(12.dp),
-                ) {
-                    Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Start transcode")
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    state.startError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = cs.error, modifier = Modifier.testTag("start_error")) }
+                    Button(
+                        onClick = onStart,
+                        enabled = state.canStart,
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("start_btn"),
+                        shape = RoundedCornerShape(12.dp),
+                    ) {
+                        Icon(Icons.Filled.SwapHoriz, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (state.starting) "Preparing..." else "Start transcode")
+                    }
                 }
             }
         }
