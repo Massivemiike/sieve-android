@@ -29,6 +29,9 @@ data class FinalizeOptions(
  */
 object ArgFinalizer {
 
+    /** Legacy `-vsync <n>` numeric modes → their `-fps_mode` names. */
+    private val FPS_MODE = mapOf("0" to "passthrough", "1" to "cfr", "2" to "vfr", "-1" to "auto")
+
     fun finalize(base: List<String>, opts: FinalizeOptions): List<String> {
         val args = base.toMutableList()
 
@@ -50,7 +53,9 @@ object ArgFinalizer {
                 val escaped = opts.subtitleSource
                     .replace("\\", "/")
                     .replace(":", "\\:")
-                    .replace("'", "\\'")
+                    // An apostrophe can't be escaped inside a quoted filter value: close the quote,
+                    // emit a doubly-escaped quote (filter + graph level), reopen -> '\\\'' .
+                    .replace("'", "'\\\\\\''")
                 appendFilter(args, "-vf", "subtitles='$escaped'")
             }
         }
@@ -61,8 +66,10 @@ object ArgFinalizer {
             if (idx >= 0 && idx + 1 < args.size) args[idx + 1] = opts.crfOverride.toString()
         }
 
-        // 4. Normalize audio (EBU R128) — append to -af or push new.
-        if (opts.normalizeAudio) appendFilter(args, "-af", "loudnorm=I=-16:TP=-1.5:LRA=11")
+        // 4. Normalize audio (EBU R128) — append to -af or push new. loudnorm upsamples to 192 kHz
+        //    internally; resample back or FLAC/WAV/AAC outputs silently keep 96-192 kHz. The 48 kHz
+        //    is restored to the source's own rate at spawn time ([LoudnormRate]).
+        if (opts.normalizeAudio) appendFilter(args, "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000")
 
         // 5. Audio gain — append after loudnorm if present, else push new -af.
         if (opts.audioGainDb != 0) {
@@ -70,9 +77,17 @@ object ArgFinalizer {
             appendFilter(args, "-af", "volume=${db}dB")
         }
 
-        // 6. Raw args — split on whitespace, appended at the very end.
+        // 6. Raw args — split on whitespace, appended at the very end. `-vsync` was removed from newer
+        //    ffmpeg; `-fps_mode` works on every build, so rewrite `-vsync <n>` (unknown values pass through).
         if (opts.rawArgs.isNotBlank()) {
-            args += opts.rawArgs.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val raw = opts.rawArgs.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }.toMutableList()
+            for (i in raw.indices) {
+                if (raw[i] == "-vsync" && i + 1 < raw.size) {
+                    raw[i] = "-fps_mode"
+                    raw[i + 1] = FPS_MODE[raw[i + 1]] ?: raw[i + 1]
+                }
+            }
+            args += raw
         }
 
         return args

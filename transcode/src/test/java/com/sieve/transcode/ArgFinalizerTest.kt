@@ -80,7 +80,20 @@ class ArgFinalizerTest {
             opts(emitThreads = false, burnSubtitles = true, subtitleSource = "a:b'c"),
         )
         val vfIdx = out.indexOf("-vf")
-        assertEquals("scale=-2:1080,subtitles='a\\:b\\'c'", out[vfIdx + 1])
+        // colon -> \:, apostrophe -> close quote + three backslashes + quote + reopen quote ('\\\'')
+        assertEquals("scale=-2:1080,subtitles='a\\:b'\\\\\\''c'", out[vfIdx + 1])
+    }
+
+    @Test fun burnSubs_apostropheBecomesCloseQuoteTripleBackslashQuoteReopen() {
+        val out = ArgFinalizer.finalize(
+            FfmpegArgs.build("aac-256", SOFTWARE),
+            opts(emitThreads = false, burnSubtitles = true, subtitleSource = "it's.srt"),
+        )
+        val vf = out[out.indexOf("-vf") + 1]
+        // 4 chars between "it" and "s.srt": ' \ \ \ ' ' -> exactly quote, 3 backslashes, quote, quote
+        assertEquals("subtitles='it" + "'" + "\\\\\\" + "'" + "'" + "s.srt'", vf)
+        assertTrue(vf.contains("'" + "\\".repeat(3) + "''"))
+        assertFalse("old single-backslash escape must be gone", vf.contains("\\'s"))
     }
 
     @Test fun burnSubs_pushesNewVfWhenAbsent() {
@@ -132,7 +145,8 @@ class ArgFinalizerTest {
     // ── Task 8: loudnorm, gain, raw, and full-order integration ─────
     @Test fun loudnormPushesFreshAf() {
         val out = ArgFinalizer.finalize(FfmpegArgs.build("h264-1080", SOFTWARE), opts(emitThreads = false, normalizeAudio = true))
-        assertEquals(listOf("-af", "loudnorm=I=-16:TP=-1.5:LRA=11"), out.takeLast(2))
+        // loudnorm upsamples to 192 kHz internally; aresample brings it back (source rate restored at spawn)
+        assertEquals(listOf("-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000"), out.takeLast(2))
     }
 
     @Test fun gainAndLoudnormShareOneAf_gainAfterLoudnorm() {
@@ -142,7 +156,7 @@ class ArgFinalizerTest {
         )
         val afIdx = out.indexOf("-af")
         assertEquals(1, out.count { it == "-af" }) // exactly one -af
-        assertEquals("loudnorm=I=-16:TP=-1.5:LRA=11,volume=-6dB", out[afIdx + 1])
+        assertEquals("loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,volume=-6dB", out[afIdx + 1])
     }
 
     @Test fun gainAloneClampedAndFormatted() {
@@ -156,6 +170,50 @@ class ArgFinalizerTest {
             opts(emitThreads = false, rawArgs = "  -metadata  title=Hi -x264-params keyint=48 "),
         )
         assertEquals(listOf("-metadata", "title=Hi", "-x264-params", "keyint=48"), out.takeLast(4))
+    }
+
+    @Test fun loudnormAppendsAfterExistingAf() {
+        // an -af already present in the base args gets loudnorm+aresample appended, comma-joined
+        val base = FfmpegArgs.build("aac-256", SOFTWARE) + listOf("-af", "highpass=f=80")
+        val out = ArgFinalizer.finalize(base, opts(emitThreads = false, normalizeAudio = true))
+        assertEquals(1, out.count { it == "-af" })
+        assertEquals("highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000", out[out.indexOf("-af") + 1])
+    }
+
+    @Test fun rawVsyncNumericModesRewrittenToFpsMode() {
+        val cases = mapOf("0" to "passthrough", "1" to "cfr", "2" to "vfr", "-1" to "auto")
+        for ((n, name) in cases) {
+            val out = ArgFinalizer.finalize(
+                FfmpegArgs.build("h264-1080", SOFTWARE),
+                opts(emitThreads = false, rawArgs = "-vsync $n"),
+            )
+            assertEquals("-vsync $n", listOf("-fps_mode", name), out.takeLast(2))
+            assertFalse("-vsync" in out)
+        }
+    }
+
+    @Test fun rawVsyncUnknownValuePassedThroughUnchanged() {
+        val out = ArgFinalizer.finalize(
+            FfmpegArgs.build("h264-1080", SOFTWARE),
+            opts(emitThreads = false, rawArgs = "-vsync drop -r 30"),
+        )
+        assertEquals(listOf("-fps_mode", "drop", "-r", "30"), out.takeLast(4))
+    }
+
+    @Test fun rawVsyncWithoutValueIsLeftAlone() {
+        val out = ArgFinalizer.finalize(
+            FfmpegArgs.build("h264-1080", SOFTWARE),
+            opts(emitThreads = false, rawArgs = "-tune film -vsync"),
+        )
+        assertEquals(listOf("-tune", "film", "-vsync"), out.takeLast(3))
+    }
+
+    @Test fun rawArgsWithoutVsyncUntouched() {
+        val out = ArgFinalizer.finalize(
+            FfmpegArgs.build("h264-1080", SOFTWARE),
+            opts(emitThreads = false, rawArgs = "-fps_mode vfr -metadata title=vsync"),
+        )
+        assertEquals(listOf("-fps_mode", "vfr", "-metadata", "title=vsync"), out.takeLast(4))
     }
 
     @Test fun fullPipelineOrder_threadsSubsCrfLoudnormGainRaw() {
@@ -175,7 +233,7 @@ class ArgFinalizerTest {
                 "-vf", "scale=-2:1080,subtitles='s.srt'",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 "-threads", "16",
-                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,volume=3dB",
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,volume=3dB",
                 "-tune", "film",
             ),
             out,
