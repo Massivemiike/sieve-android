@@ -235,6 +235,10 @@ private fun ErrorBanner(message: String, onRetry: () -> Unit) {
     }
 }
 
+/** yt-dlp warnings that mean its JS challenge solving failed, so the format list may be incomplete. */
+private val FORMATS_MAY_BE_MISSING =
+    Regex("formats may be missing|challenge solving failed|JavaScript runtime", RegexOption.IGNORE_CASE)
+
 @Composable
 private fun VideoInfoCard(info: VideoInfo) {
     Row(
@@ -255,10 +259,21 @@ private fun VideoInfoCard(info: VideoInfo) {
             val meta = buildList {
                 info.duration?.let { add(formatDuration(it.toLong())) }
                 info.extractor?.let { add(it) }
-                if (info.isPlaylist) add("${info.playlistCount ?: info.entries.size} videos")
+                if (info.isPlaylist) {
+                    // The analyze list is capped at 1000 entries; no reported total means there may be more.
+                    val capped = info.playlistCount == null && info.entries.size >= 1000
+                    add("${info.playlistCount ?: info.entries.size}${if (capped) "+" else ""} videos")
+                }
             }.joinToString(" · ")
             if (meta.isNotEmpty()) {
                 Text(meta, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (info.warnings.any { FORMATS_MAY_BE_MISSING.containsMatchIn(it) }) {
+                Text(
+                    "Some formats may be missing for this video. Updating yt-dlp in Settings usually fixes this.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
             }
         }
     }

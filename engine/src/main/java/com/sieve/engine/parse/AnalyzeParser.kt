@@ -2,7 +2,8 @@ package com.sieve.engine.parse
 
 import com.sieve.engine.model.VideoInfo
 
-class AnalyzeException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/** `stderr` carries yt-dlp's full stderr when the failure came from a non-zero exit (null otherwise). */
+class AnalyzeException(message: String, cause: Throwable? = null, val stderr: String? = null) : Exception(message, cause)
 
 /** Parses `yt-dlp -J` stdout into VideoInfo, gating on id || title || a present "formats" key. */
 object AnalyzeParser {
@@ -17,6 +18,8 @@ object AnalyzeParser {
         // formats key by scanning the raw string.
         val gate = !info.id.isNullOrBlank() || !info.title.isNullOrBlank() || stdout.contains("\"formats\"")
         if (!gate) throw AnalyzeException("analyze output missing id/title/formats")
+        // A playlist/channel that lists nothing (e.g. every entry unavailable) has nothing to download.
+        if (info.isPlaylist && info.entries.isEmpty()) throw AnalyzeException("This link has no downloadable videos.")
         return info
     }
 }
@@ -24,6 +27,8 @@ object AnalyzeParser {
 /** A result with only storyboard/mhtml formats (or none) usually means auth is needed. */
 object StoryboardDetector {
     fun hasOnlyStoryboards(info: VideoInfo): Boolean {
+        // Flat playlists carry no per-entry formats; that is not a degraded extraction.
+        if (info.isPlaylist) return false
         if (info.formats.isEmpty()) return true
         return info.formats.all { it.isStoryboard || it.protocol == "mhtml" }
     }

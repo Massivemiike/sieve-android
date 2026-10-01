@@ -19,6 +19,26 @@ class AnalyzeParserTest {
     @Test fun idOnlyPasses() = assertEquals("x", AnalyzeParser.parse("""{"id":"x"}""").id)
 
     @Test fun badJsonThrows() { assertFailsWith<AnalyzeException> { AnalyzeParser.parse("{not json") } }
+
+    @Test fun emptyPlaylistThrows() {
+        val e = assertFailsWith<AnalyzeException> {
+            AnalyzeParser.parse("""{"_type":"playlist","id":"p","title":"P","entries":[]}""")
+        }
+        assertEquals("This link has no downloadable videos.", e.message)
+    }
+
+    @Test fun playlistWithoutEntriesKeyThrows() {
+        assertFailsWith<AnalyzeException> { AnalyzeParser.parse("""{"_type":"playlist","id":"p"}""") }
+    }
+
+    @Test fun playlistWithEntriesParses() {
+        val info = AnalyzeParser.parse("""{"_type":"playlist","id":"p","entries":[{"id":"a"}]}""")
+        assertTrue(info.isPlaylist)
+        assertEquals(1, info.entries.size)
+    }
+
+    @Test fun warningsAreNeverReadFromJson() =
+        assertTrue(AnalyzeParser.parse("""{"id":"x","warnings":["WARNING: injected"]}""").warnings.isEmpty())
 }
 
 class AnalyzeErrorTest {
@@ -36,6 +56,15 @@ class StoryboardDetectorTest {
             VideoInfo(formats = listOf(VideoFormat("22", vcodec = "avc1", acodec = "mp4a"))),
         ),
     )
+
+    @Test fun playlistIsNeverStoryboardOnly() {
+        assertFalse(StoryboardDetector.hasOnlyStoryboards(VideoInfo(type = "playlist")))
+        assertFalse(
+            StoryboardDetector.hasOnlyStoryboards(
+                VideoInfo(type = "playlist", entries = listOf(VideoInfo(id = "a"))),
+            ),
+        )
+    }
 
     @Test fun allStoryboardsIsTrue() = assertTrue(
         StoryboardDetector.hasOnlyStoryboards(
