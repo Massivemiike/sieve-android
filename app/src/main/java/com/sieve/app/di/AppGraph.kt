@@ -21,6 +21,7 @@ import com.sieve.queue.core.QueueState
 import com.sieve.queue.core.awaitNoActiveDownload
 import com.sieve.queue.service.JobDriver
 import com.sieve.queue.service.QueueManager
+import com.sieve.queue.service.QueueNotification
 import com.sieve.queue.service.QueueRepository
 import com.sieve.queue.service.RealDownloadPort
 import com.sieve.queue.service.RealTranscodePort
@@ -98,6 +99,9 @@ object AppGraph {
         val manager = QueueManager(
             JobDriver(dlPort, txPort), dlPort, txPort, persistence, output, SystemClock(),
             initial = QueueState(maxDownloads = initialPrefs.maxDownloads, maxTranscodes = initialPrefs.maxTranscodes),
+            // "Downloaded / Transcoded / Failed: <title>"; postDone never throws and skips quietly without the permission.
+            onCompleted = { QueueNotification.postDone(app, it) },
+            onFailed = { QueueNotification.postDone(app, it) },
         )
         queue = QueueRepository.create(app, manager, appScope)
         queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })

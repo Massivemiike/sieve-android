@@ -212,6 +212,7 @@ class QueueManagerTest {
         assertEquals("content://media/external/downloads/a", m.state.value.job("a")!!.filePath)
         assertEquals("content://media/external/downloads/a", persistence.loadAll().single().filePath)
         assertEquals("content://media/external/downloads/a", completed.single().filePath) // the callback sees it too
+        assertEquals(DownloadStatus.COMPLETED, completed.single().status)
     }
 
     @Test fun `a sink without a Uri records its display path`() = runTest {

@@ -49,7 +49,10 @@ class QueueManager(
     private val output: OutputLocationProvider,
     private val clock: Clock,
     initial: QueueState = QueueState(),
+    /** Called after finalize succeeded, with the job in its COMPLETED form (`filePath` = where the file landed). */
     private val onCompleted: suspend (QueueJob) -> Unit = {},
+    /** Called once a job lands in FAILED for good (not for a transient auto-retry, a pause or a user cancel). */
+    private val onFailed: suspend (QueueJob) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<QueueState> = _state.asStateFlow()
@@ -200,6 +203,11 @@ class QueueManager(
                                 JobSignal.Terminal(id, Outcome.Failed(FailureInfo("saving output failed: ${t.message}")))
                             } ?: signal
                             dispatch(QueueEvent.Signal(terminal))
+                            // A failed save never reaches onSignal's failure branch, so announce it here (unless the
+                            // reducer chose an automatic retry, which is not a failure yet).
+                            if (terminal.outcome is Outcome.Failed) {
+                                _state.value.job(id)?.takeIf { it.status == DownloadStatus.FAILED }?.let { notifyFailed(it) }
+                            }
                         } else {
                             dispatch(QueueEvent.Signal(signal))
                             onSignal(id, signal, prepared)
@@ -232,7 +240,9 @@ class QueueManager(
                         android.util.Log.e("SieveFin", "finalize FAILED id=${job.id}", t)
                         throw t
                     }
-                    onCompleted(_state.value.job(job.id) ?: job)
+                    // The COMPLETED dispatch comes right after this (see launchJob), so hand over the job in
+                    // its finished form: saved location recorded, status as it is about to be persisted.
+                    onCompleted((_state.value.job(job.id) ?: job).copy(status = DownloadStatus.COMPLETED))
                 }
             }
             is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) output.discard(job, prepared)
@@ -241,9 +251,19 @@ class QueueManager(
                     // reducer chose auto-retry → schedule a delayed re-drain after the backoff
                     scope.launch { delay(_state.value.retryPolicy.backoffMs); drain() }
                 } else if (job.status == DownloadStatus.FAILED) {
-                    output.discard(job, prepared)
+                    // NonCancellable: the FAILED dispatch just flipped the queue idle, which stops the service
+                    // and cancels this scope — the failure must still be announced and the work dir cleaned.
+                    withContext(NonCancellable) {
+                        output.discard(job, prepared)
+                        notifyFailed(job)
+                    }
                 }
         }
+    }
+
+    /** The callback is best-effort (it posts a notification): its failure must never touch the queue. */
+    private suspend fun notifyFailed(job: QueueJob) {
+        withContext(NonCancellable) { runCatching { onFailed(job) } }
     }
 
     /** Rewrite the engine args of QUEUED download rows when a global setting changes (rewriteQueued* analog). */

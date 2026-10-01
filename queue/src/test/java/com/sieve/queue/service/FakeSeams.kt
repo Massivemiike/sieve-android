@@ -20,6 +20,8 @@ class FakeOutputProvider(
     private val prepareGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
     /** When set, finalize reports `<prefix><jobId>` as the saved file's Uri (null = the sink has no Uri). */
     private val finalUriPrefix: String? = null,
+    /** When true, finalize throws (disk full, SAF revoked, ...). */
+    private val failFinalize: Boolean = false,
 ) : OutputLocationProvider {
     val prepared = mutableListOf<String>()
     val finalized = mutableListOf<String>()
@@ -30,6 +32,7 @@ class FakeOutputProvider(
         return PreparedOutput("/work/${job.id}", "%(title)s.%(ext)s")
     }
     override suspend fun finalize(job: QueueJob, prepared: PreparedOutput): FinalLocation {
+        if (failFinalize) throw java.io.IOException("disk full")
         finalized += job.id
         return FinalLocation("/final/${job.id}", finalUriPrefix?.let { it + job.id })
     }
