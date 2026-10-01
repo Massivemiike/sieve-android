@@ -4,7 +4,10 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 
-/** Result of `yt-dlp -J`. `cookieFallback` is engine-internal (@Transient — never deserialized). */
+/**
+ * Result of `yt-dlp -J`. `cookieFallback` and `warnings` (first few yt-dlp `WARNING:` stderr lines
+ * captured during analyze) are engine-internal (@Transient — never deserialized).
+ */
 @Serializable
 data class VideoInfo(
     val id: String? = null,
@@ -22,6 +25,7 @@ data class VideoInfo(
     @SerialName("playlist_count") val playlistCount: Int? = null,
     val chapters: List<VideoChapter> = emptyList(),
     @Transient val cookieFallback: Boolean = false,
+    @Transient val warnings: List<String> = emptyList(),
 ) {
     val isPlaylist: Boolean get() = type == "playlist"
     val displayChannel: String get() = uploader?.takeIf { it.isNotBlank() } ?: channel.orEmpty()

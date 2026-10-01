@@ -6,6 +6,7 @@ import com.sieve.engine.parse.AnalyzeException
 import com.sieve.engine.parse.AnalyzeParser
 import com.sieve.engine.parse.ProgressParser
 import com.sieve.engine.parse.StoryboardDetector
+import com.sieve.engine.site.SiteRules
 import com.sieve.engine.update.GithubReleaseApi
 import com.sieve.engine.update.UpdateChannel
 import com.sieve.engine.update.UpdateCheck
@@ -15,56 +16,132 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class YtDlpEngineImpl(
     private val client: YoutubeDLClient,
     private val github: GithubReleaseApi,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     analyzeConcurrency: Int = 2,
+    /** How long one analyze attempt may run before it is killed. Injectable so tests can use a tiny value. */
+    private val analyzeTimeoutMs: Long = ANALYZE_TIMEOUT_MS,
 ) : YtDlpEngine {
 
     private val gate = Semaphore(analyzeConcurrency)
     private val cancelledIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-    /** One analyze attempt; throws on non-zero exit or unparseable output (mirrors runAnalyze). */
-    private fun runAnalyze(url: String, cookiesBrowser: String?): VideoInfo {
+    /** Unique per-call analyze ids: the library rejects a second live call with the same process id. */
+    private val analyzeSeq = AtomicLong()
+
+    /**
+     * The URL form analyze settled on for a link (e.g. Vimeo's player URL), keyed by what the user
+     * pasted and by its normalized form, so the download starts with the form that works. Capped,
+     * least-recently-used first out.
+     */
+    private val settledUrls: MutableMap<String, String> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, String>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+                size > SETTLED_URL_CAP
+        },
+    )
+
+    private fun rememberSettled(raw: String, normalized: String, used: String) {
+        for (key in setOf(raw, raw.trim(), normalized)) if (key.isNotBlank()) settledUrls[key] = used
+    }
+
+    private class Analyzed(val info: VideoInfo, val used: String)
+
+    /**
+     * One analyze attempt; throws on non-zero exit, timeout or unparseable output. The library
+     * throws on any non-zero exit (message = full stderr), so both a thrown failure and an
+     * `exitCode != 0` result are handled. `client.execute` blocks, so the timeout is a watchdog
+     * that kills the process by id rather than a coroutine `withTimeout`.
+     */
+    private suspend fun runAnalyze(url: String, cookiesBrowser: String?): VideoInfo = coroutineScope {
+        val id = "analyze-${analyzeSeq.incrementAndGet()}"
         val opts = buildList {
-            add("-J"); add("--no-warnings")
+            add("--encoding"); add("utf-8")
+            add("-J"); add("--flat-playlist"); add("-I"); add("1:$ANALYZE_ENTRY_CAP")
             if (!cookiesBrowser.isNullOrBlank()) { add("--cookies-from-browser"); add(cookiesBrowser) }
         }
-        val res = client.execute("analyze", url, opts) { _, _, _ -> }
-        if (res.exitCode != 0) throw AnalyzeException(AnalyzeError.extract(res.err, res.exitCode))
-        return AnalyzeParser.parse(res.out)
+        val timedOut = AtomicBoolean(false)
+        val watchdog = launch(Dispatchers.Default) {
+            delay(analyzeTimeoutMs)
+            timedOut.set(true)
+            runCatching { client.destroy(id) }
+        }
+        try {
+            val res = try {
+                client.execute(id, url, opts) { _, _, _ -> }
+            } catch (e: Exception) {
+                if (timedOut.get()) throw AnalyzeException(ANALYZE_TIMEOUT_MESSAGE, e)
+                throw e
+            }
+            if (res.exitCode != 0) {
+                if (timedOut.get()) throw AnalyzeException(ANALYZE_TIMEOUT_MESSAGE)
+                throw AnalyzeException(AnalyzeError.extract(res.err, res.exitCode), stderr = res.err)
+            }
+            val info = AnalyzeParser.parse(res.out)
+            val warnings = res.err.lines().filter { it.trimStart().startsWith("WARNING:") }.take(MAX_WARNINGS)
+            if (warnings.isEmpty()) info else info.copy(warnings = warnings)
+        } finally {
+            watchdog.cancel()
+        }
+    }
+
+    /** [runAnalyze] plus the alternate-URL retry (Vimeo player form) when the site rejects the first form. */
+    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?): Analyzed {
+        try {
+            return Analyzed(runAnalyze(url, cookiesBrowser), url)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val stderr = (e as? AnalyzeException)?.stderr ?: e.message
+            val alt = SiteRules.fallbackUrl(url, SiteRules.errorText(stderr)) ?: throw e
+            // The alternate form's answer is the more useful error when it fails too.
+            return Analyzed(runAnalyze(alt, cookiesBrowser), alt)
+        }
     }
 
     override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = withContext(io) {
         gate.withPermit {
+            val normalized = SiteRules.normalizeUrl(url)
             val hadCookies = !cookiesBrowser.isNullOrBlank()
             try {
-                val result = runAnalyze(url, cookiesBrowser)
+                val first = analyzeSettling(normalized, cookiesBrowser)
                 // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
-                if (hadCookies && StoryboardDetector.hasOnlyStoryboards(result)) {
-                    val fallback = runCatching { runAnalyze(url, null) }.getOrNull()
-                    if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback)) {
-                        return@withPermit AnalyzeOutcome.Success(fallback.copy(cookieFallback = true))
+                if (hadCookies && StoryboardDetector.hasOnlyStoryboards(first.info)) {
+                    val fallback = runCatching { analyzeSettling(normalized, null) }.getOrNull()
+                    if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback.info)) {
+                        rememberSettled(url, normalized, fallback.used)
+                        return@withPermit AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
                     }
                     // else keep the original result
                 }
-                AnalyzeOutcome.Success(result)
+                rememberSettled(url, normalized, first.used)
+                AnalyzeOutcome.Success(first.info)
+            } catch (e: CancellationException) {
+                throw e
             } catch (err: Exception) {
                 if (hadCookies) {
                     // The cookie attempt failed outright — retry without, returned unconditionally.
-                    val fallback = runCatching { runAnalyze(url, null) }.getOrNull()
+                    val fallback = runCatching { analyzeSettling(normalized, null) }.getOrNull()
                     if (fallback != null) {
-                        AnalyzeOutcome.Success(fallback.copy(cookieFallback = true))
+                        rememberSettled(url, normalized, fallback.used)
+                        AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
                     } else {
                         AnalyzeOutcome.Failure(err.message ?: "analyze failed") // original error
                     }
@@ -80,35 +157,84 @@ class YtDlpEngineImpl(
         ensureOutputDir(args)
         android.util.Log.i("SieveDL", "download start id=$id args=$args")
         withContext(io) {
-            try {
-                val result = client.execute(id, url, args) { _, _, line ->
-                    for (ln in line.split("\n")) {
-                        if (ln.isBlank()) continue
-                        val progress = ProgressParser.parseProgress(ln)
-                        if (progress != null) {
-                            trySend(EngineEvent.Progress(progress))
-                        } else {
-                            trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+            // First attempt: the URL form analyze settled on, else the deterministic normalization.
+            var target = settledUrls[url] ?: settledUrls[url.trim()] ?: SiteRules.normalizeUrl(url)
+            var runArgs = listOf("--encoding", "utf-8") + args
+            // Each recovery runs at most once per download.
+            val tried = mutableSetOf<String>()
+            while (true) {
+                var exitCode = 0
+                var stderr = ""
+                var thrown: Exception? = null
+                try {
+                    val result = client.execute(id, target, runArgs) { _, _, line ->
+                        for (ln in line.split("\n")) {
+                            if (ln.isBlank()) continue
+                            val progress = ProgressParser.parseProgress(ln)
+                            if (progress != null) {
+                                trySend(EngineEvent.Progress(progress))
+                            } else {
+                                trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+                            }
                         }
                     }
-                }
-                if (result.exitCode != 0) {
-                    android.util.Log.e("SieveDL", "EXIT=${result.exitCode}\nSTDERR:\n${result.err.takeLast(4000)}\nSTDOUT:\n${result.out.takeLast(1500)}")
-                }
-                send(EngineEvent.Completed(result.exitCode))
-            } catch (e: CancellationException) {
-                send(EngineEvent.Cancelled)
-                throw e
-            } catch (e: Exception) {
-                // cancel(id) → destroy(id) kills the process and the library throws; route
-                // that as a user Cancel, not an error.
-                if (cancelledIds.remove(id)) {
+                    exitCode = result.exitCode
+                    stderr = result.err
+                    if (exitCode != 0) {
+                        android.util.Log.e("SieveDL", "EXIT=$exitCode\nSTDERR:\n${result.err.takeLast(4000)}\nSTDOUT:\n${result.out.takeLast(1500)}")
+                    }
+                } catch (e: CancellationException) {
                     send(EngineEvent.Cancelled)
-                } else {
-                    android.util.Log.e("SieveDL", "DL threw: ${e.javaClass.simpleName}\n${e.message?.takeLast(4000)}")
-                    send(EngineEvent.Log(e.message ?: "download failed", null, true))
-                    send(EngineEvent.Completed(1))
+                    throw e
+                } catch (e: Exception) {
+                    thrown = e
+                    stderr = e.message.orEmpty()
                 }
+
+                if (thrown == null && exitCode == 0) {
+                    send(EngineEvent.Completed(0))
+                    return@withContext
+                }
+
+                val cancelled = cancelledIds.contains(id)
+                // cancel(id) → destroy(id) kills the process and the library throws; route
+                // that as a user Cancel, not an error (and never retry it).
+                if (thrown != null && cancelled) {
+                    cancelledIds.remove(id)
+                    send(EngineEvent.Cancelled)
+                    return@withContext
+                }
+
+                if (!cancelled) {
+                    val errs = SiteRules.errorText(stderr)
+                    // Same media under another URL form (Vimeo player URL).
+                    val alt = SiteRules.fallbackUrl(target, errs)
+                    if (alt != null && tried.add("alt")) {
+                        send(EngineEvent.Log("[retry] Retrying with the video player URL", null, false))
+                        target = alt
+                        continue
+                    }
+                    // The chosen format is DRM-locked (Vimeo serves some streams that way):
+                    // let yt-dlp test formats and fall back to a playable one.
+                    if (DRM_PROTECTED.containsMatchIn(errs) && CHECK_FORMATS !in runArgs && tried.add("check-formats")) {
+                        send(EngineEvent.Log("[retry] That format is DRM-locked — retrying with a playable one", null, false))
+                        runArgs = runArgs + CHECK_FORMATS
+                        continue
+                    }
+                }
+
+                // Final failure: only the LAST attempt is reported.
+                if (thrown != null) {
+                    android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)}")
+                    send(EngineEvent.Log(thrown.message ?: "download failed", null, true))
+                    send(EngineEvent.Completed(1))
+                } else {
+                    // Same contract as the thrown path: the failure's text travels as an error Log so
+                    // the queue can show and classify the real cause, not just the exit code.
+                    if (stderr.isNotBlank()) send(EngineEvent.Log(stderr, null, true))
+                    send(EngineEvent.Completed(exitCode))
+                }
+                return@withContext
             }
         }
     }.buffer(Channel.UNLIMITED) // never drop a progress frame (incl. the terminal 100%)
@@ -141,5 +267,17 @@ class YtDlpEngineImpl(
             val path = args[i + 1]
             if (!path.startsWith("content://")) runCatching { File(path).mkdirs() }
         }
+    }
+
+    private companion object {
+        const val ANALYZE_TIMEOUT_MS = 150_000L
+        const val ANALYZE_TIMEOUT_MESSAGE = "Timed out while reading this link — the site may be slow or blocking requests."
+
+        /** Huge channels take minutes to list; list the newest 1,000 (downloading still gets them all). */
+        const val ANALYZE_ENTRY_CAP = 1000
+        const val MAX_WARNINGS = 5
+        const val SETTLED_URL_CAP = 1000
+        const val CHECK_FORMATS = "--check-formats"
+        val DRM_PROTECTED = Regex("DRM protected", RegexOption.IGNORE_CASE)
     }
 }
