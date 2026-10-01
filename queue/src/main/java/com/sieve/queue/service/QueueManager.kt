@@ -199,7 +199,10 @@ class QueueManager(
         // in PREPARING forever (the rebound service's drain only admits QUEUED). Leave jobs QUEUED;
         // start()'s kick re-drains once a live scope is bound.
         if (!this::scope.isInitialized || !scope.isActive) return@withLock
-        val toAdmit = NextItemSelector.select(_state.value, clock.nowMs())
+        // A row put back to QUEUED (Retry, Resume) while its previous run is still unwinding is not claimed yet:
+        // that run's coroutine stays in runningJobs until its finally block, so launchJob would refuse the launch
+        // and leave the row PREPARING forever. It waits as QUEUED; the unwinding run's own finally re-drains.
+        val toAdmit = NextItemSelector.select(_state.value, clock.nowMs()).filterNot { runningJobs.containsKey(it) }
         if (toAdmit.isEmpty()) return@withLock
         applyLocked(QueueEvent.MarkPreparing(toAdmit))
         for (id in toAdmit) launchJob(id)
@@ -243,6 +246,12 @@ class QueueManager(
                                 _state.value.job(id)?.takeIf { it.status == DownloadStatus.FAILED }?.let { notifyFailed(it) }
                             }
                         } else {
+                            // A failed run's work dir is settled BEFORE FAILED is dispatched, like finalize before
+                            // COMPLETED: the finished files are copied out while the row is still live, so the
+                            // queue is not idle (the service stays up), and Retry / Remove cannot race the copy.
+                            if (signal is JobSignal.Terminal && signal.outcome is Outcome.Failed && endsFailed(id, signal)) {
+                                keepFinishedFiles(_state.value.job(id) ?: job, prepared)
+                            }
                             dispatch(QueueEvent.Signal(signal))
                             onSignal(id, signal, prepared)
                         }
@@ -285,36 +294,42 @@ class QueueManager(
                     // reducer chose auto-retry → schedule a delayed re-drain after the backoff
                     scope.launch { delay(_state.value.retryPolicy.backoffMs); drain() }
                 } else if (job.status == DownloadStatus.FAILED) {
-                    // NonCancellable: the FAILED dispatch just flipped the queue idle, which stops the service
-                    // and cancels this scope — the failure must still be announced and the work dir cleaned.
-                    withContext(NonCancellable) {
-                        val saved = keepFinishedFiles(job, prepared)
-                        notifyFailed(saved ?: _state.value.job(job.id) ?: job)
-                    }
+                    // The work dir was already settled (see launchJob); the row carries the saved location, if any.
+                    notifyFailed(job)
                 }
         }
     }
 
+    /** Would this Failed terminal leave the row FAILED, rather than hand it to an automatic retry? */
+    private fun endsFailed(id: String, terminal: JobSignal.Terminal): Boolean =
+        QueueReducer.reduce(_state.value, QueueEvent.Signal(terminal)).job(id)?.status == DownloadStatus.FAILED
+
     /**
-     * Clears a FAILED job's work dir, after saving whatever finished in it. yt-dlp exits non-zero when ONE
-     * playlist entry fails, having downloaded the rest; discarding the dir would delete all of that, and no
-     * Retry could bring it back. The row stays FAILED (with the error and the saved location), and the per-job
-     * download archive makes its Retry skip the saved entries instead of saving duplicates. Downloads only: a
-     * failed ffmpeg run leaves a truncated file, which is no result. A failed save keeps the work dir (the
-     * finished files are still in it) for the Retry instead of deleting them. Returns the row when files were saved.
+     * Settles a failing job's work dir BEFORE its row shows FAILED: saves whatever finished in it, else clears
+     * it. yt-dlp exits non-zero when ONE playlist entry fails, having downloaded the rest; discarding the dir
+     * would delete all of that, and no Retry could bring it back. The row then goes FAILED (with the error and
+     * the saved location), and the per-job download archive makes its Retry skip the saved entries instead of
+     * saving duplicates. Known limit: yt-dlp archives an entry only after post-processing, so one whose media
+     * finished but whose post-processor errored is saved here yet re-downloaded (and saved again) by a Retry.
+     * Downloads only: a failed ffmpeg run leaves a truncated file, which is no result. A failed save keeps the
+     * work dir (the finished files are still in it) for the Retry instead of deleting them. Never throws: the
+     * FAILED dispatch that follows must happen whatever became of the files. NonCancellable: the copy must
+     * survive a service teardown once started, like finalize.
      */
-    private suspend fun keepFinishedFiles(job: QueueJob, prepared: PreparedOutput): QueueJob? {
-        if (job.spec !is JobSpec.Download) { output.discard(job, prepared); return null }
-        val saved = try {
-            output.salvage(job, prepared)
-        } catch (t: Throwable) {
-            android.util.Log.e("SieveFin", "salvage FAILED id=${job.id}; keeping the work dir", t)
-            return null
+    private suspend fun keepFinishedFiles(job: QueueJob, prepared: PreparedOutput) {
+        withContext(NonCancellable) {
+            try {
+                val saved = if (job.spec is JobSpec.Download) output.salvage(job, prepared) else null
+                if (saved == null) {
+                    output.discard(job, prepared)
+                } else {
+                    android.util.Log.i("SieveFin", "salvage OK id=${job.id} -> ${saved.displayPath} uri=${saved.uri}")
+                    dispatch(QueueEvent.OutputSaved(job.id, saved.uri ?: saved.displayPath))
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("SieveFin", "settling the work dir FAILED id=${job.id}; leaving it for the Retry", t)
+            }
         }
-        if (saved == null) { output.discard(job, prepared); return null }
-        android.util.Log.i("SieveFin", "salvage OK id=${job.id} -> ${saved.displayPath} uri=${saved.uri}")
-        dispatch(QueueEvent.OutputSaved(job.id, saved.uri ?: saved.displayPath))
-        return _state.value.job(job.id)
     }
 
     /** The callback is best-effort (it posts a notification): its failure must never touch the queue. */

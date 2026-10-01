@@ -1,5 +1,6 @@
 package com.sieve.queue.service
 
+import com.sieve.engine.model.DownloadProgress
 import com.sieve.engine.repo.EngineEvent
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.FinalLocation
@@ -8,7 +9,9 @@ import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.core.QueueState
 import com.sieve.transcode.runner.TranscodeEvent
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runCurrent
@@ -114,5 +117,67 @@ class QueueManagerSalvageTest {
 
         assertTrue(output.salvaged.isEmpty())
         assertEquals(listOf("a"), output.discarded)
+    }
+
+    // The copy can take minutes. While it runs the row must not offer Retry / Remove (they would race the copy:
+    // a Retry wedged the job in PREPARING, a Remove deleted the work dir under it), and the queue must not read
+    // as idle (the service would stop with the copy half done) — so FAILED only appears once the files are saved.
+    @Test fun `the row stays running while the finished files are copied and shows FAILED only after`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var runs = 0
+        val port = FakeDownloadPort { runs++; privateEntry.script(it) }
+        val output = FakeOutputProvider(
+            salvagedTo = FinalLocation("Download/Sieve/Track 01.mp3", "content://media/external/downloads/9"), salvageGate = gate,
+        )
+        val failed = mutableListOf<QueueJob>()
+        val m = manager(port, output, failed)
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        runCurrent() // runs until the salvage waits at the gate
+
+        assertEquals(listOf("a"), output.salvaged)                                       // the copy is under way ...
+        assertEquals(DownloadStatus.RUNNING, m.state.value.job("a")!!.status)             // ... and the row is still live
+        assertTrue(failed.isEmpty())
+        m.retry("a"); m.remove("a"); m.clearFinished()                                    // none of these may reach a live row
+        runCurrent()
+        assertEquals(DownloadStatus.RUNNING, m.state.value.job("a")!!.status)
+        assertTrue("the work dir under the copy must stay", output.discarded.isEmpty())
+
+        gate.complete(Unit)
+        m.state.first { it.job("a")?.status == DownloadStatus.FAILED }
+        runCurrent()
+
+        assertEquals(1, runs)
+        assertEquals("content://media/external/downloads/9", m.state.value.job("a")!!.filePath)
+        assertEquals(1, failed.size)
+        assertEquals("content://media/external/downloads/9", failed.single().filePath)
+    }
+
+    // The failed run's coroutine stays in runningJobs until its finally block; a Retry in that last instant (here
+    // held open by a slow failure callback) used to be claimed by drain() but refused by launchJob — PREPARING forever.
+    @Test fun `a Retry pressed while the failed run is still unwinding runs once it has unwound`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var runs = 0
+        val port = FakeDownloadPort {
+            runs++
+            if (runs == 1) privateEntry.script(it) else flow { emit(EngineEvent.Progress(DownloadProgress(0.1f))); awaitCancellation() }
+        }
+        val txPort = FakeTranscodePort()
+        val m = QueueManager(
+            JobDriver(port, txPort), port, txPort, InMemoryPersistence(), FakeOutputProvider(), FakeClock(),
+            initial = QueueState(maxDownloads = 1), onFailed = { gate.await() },
+        )
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        runCurrent() // FAILED is out; the run is still inside the failure callback
+        assertEquals(DownloadStatus.FAILED, m.state.value.job("a")!!.status)
+
+        m.retry("a")
+        runCurrent()
+        gate.complete(Unit)
+        runCurrent()
+
+        assertEquals(DownloadStatus.RUNNING, m.state.value.job("a")!!.status)
+        assertEquals(2, runs)
     }
 }

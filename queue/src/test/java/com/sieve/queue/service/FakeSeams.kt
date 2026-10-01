@@ -26,6 +26,8 @@ class FakeOutputProvider(
     private val salvagedTo: FinalLocation? = null,
     /** When true, salvage throws (the copy out of the work dir failed). */
     private val failSalvage: Boolean = false,
+    /** When set, salvage waits here before reporting — a multi-GB copy still under way. */
+    private val salvageGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null,
 ) : OutputLocationProvider {
     val prepared = mutableListOf<String>()
     val finalized = mutableListOf<String>()
@@ -44,6 +46,7 @@ class FakeOutputProvider(
     override suspend fun discard(job: QueueJob, prepared: PreparedOutput) { discarded += job.id }
     override suspend fun salvage(job: QueueJob, prepared: PreparedOutput): FinalLocation? {
         salvaged += job.id
+        salvageGate?.await()
         if (failSalvage) throw java.io.IOException("copy failed")
         return salvagedTo
     }
