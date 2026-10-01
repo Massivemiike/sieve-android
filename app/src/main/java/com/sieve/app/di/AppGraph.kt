@@ -8,7 +8,6 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.room.Room
-import kotlinx.coroutines.withContext
 import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
 import com.sieve.app.settings.CookiesStore
@@ -18,6 +17,8 @@ import com.sieve.engine.repo.YoutubeDLClientImpl
 import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.engine.repo.YtDlpEngineImpl
 import com.sieve.engine.update.GithubReleaseApiImpl
+import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.QueueState
 import com.sieve.queue.core.awaitNoActiveDownload
 import com.sieve.queue.service.JobDriver
@@ -33,6 +34,7 @@ import com.sieve.storage.settings.StorageSettings
 import com.sieve.transcode.detect.EncoderDetector
 import com.sieve.transcode.detect.android.AndroidVideoEncoderProbe
 import com.sieve.transcode.runner.android.FfmpegBinary
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -60,6 +62,10 @@ object AppGraph {
     var ffmpegEncodersStdout: String = ""; private set
 
     private lateinit var appContext: Context
+    private lateinit var sourceCopies: SourceCopies
+
+    /** Completes once the startup sweep of orphaned source copies is done; materialize waits on it. */
+    private val sourceSweepDone = CompletableDeferred<Unit>()
 
     @Volatile private var initialized = false
 
@@ -96,6 +102,8 @@ object AppGraph {
 
         val db = Room.databaseBuilder(app, SieveDatabase::class.java, "sieve.db").build()
         val persistence = com.sieve.queue.persist.RoomQueuePersistence(db.queueDao())
+        sourceCopies = SourceCopies(app.cacheDir)
+        sweepOrphanedSources(ioScope, persistence)
         val output = StorageModule.provideOutputLocationProvider(app, prefs)
 
         val dlPort = RealDownloadPort(engine)
@@ -109,6 +117,8 @@ object AppGraph {
             // "Downloaded / Transcoded / Failed: <title>"; postDone never throws and skips quietly without the permission.
             onCompleted = { QueueNotification.postDone(app, it) },
             onFailed = { QueueNotification.postDone(app, it) },
+            // The picked file's cache copy goes once its job is done with it (completed / cancelled / row removed).
+            releaseSource = { job -> (job.spec as? JobSpec.Transcode)?.let { sourceCopies.release(it.inputPath) } },
         )
         queue = QueueRepository.create(app, manager, appScope)
         queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })
@@ -149,6 +159,26 @@ object AppGraph {
         }
     }
 
+    /**
+     * Deletes `tx-src-*` copies in the cache that no job can still need: left by a process death mid-job, or
+     * by app versions that never cleaned up. A copy is kept while a persisted job that could still run (queued,
+     * running, paused — or failed, which Retry re-runs) reads it. Runs before any new copy can be made
+     * ([materializeSource] waits for it), so it can never delete a copy that is mid-flight.
+     */
+    private fun sweepOrphanedSources(scope: CoroutineScope, persistence: com.sieve.queue.core.QueuePersistence) {
+        scope.launch {
+            runCatching {
+                val inUse = persistence.loadAll()
+                    .filter { it.status != DownloadStatus.COMPLETED && it.status != DownloadStatus.CANCELLED }
+                    .mapNotNull { (it.spec as? JobSpec.Transcode)?.inputPath }
+                    .toSet()
+                val n = sourceCopies.sweep(inUse)
+                if (n > 0) android.util.Log.i("SieveQueue", "swept $n orphaned transcode source copies")
+            }.onFailure { android.util.Log.w("SieveQueue", "source sweep skipped: ${it.message}") }
+            sourceSweepDone.complete(Unit)
+        }
+    }
+
     /** The picked document's own last-modified time (providers that expose it), else null. */
     private fun documentLastModified(ctx: Context, uri: String): Long? = runCatching {
         ctx.contentResolver.query(
@@ -159,15 +189,10 @@ object AppGraph {
     /**
      * Materializes a SAF/content source into a real file path ffmpeg can read (native processes can't
      * open a content:// URI). Copies into cacheDir; the transcode work file lands under the SAF sink
-     * via the queue's finalize.
+     * via the queue's finalize. The copy is deleted when its job is done (see [SourceCopies]).
      */
-    suspend fun materializeSource(uriStr: String, name: String): String = withContext(kotlinx.coroutines.Dispatchers.IO) {
-        val ext = name.substringAfterLast('.', "mp4")
-        val dst = File(appContext.cacheDir, "tx-src-${System.nanoTime()}.$ext")
-        appContext.contentResolver.openInputStream(Uri.parse(uriStr)).use { input ->
-            requireNotNull(input) { "cannot open source $uriStr" }
-            dst.outputStream().use { input.copyTo(it) }
-        }
-        dst.absolutePath
+    suspend fun materializeSource(uriStr: String, name: String): String {
+        sourceSweepDone.await() // never race the startup sweep of orphaned copies
+        return sourceCopies.materialize(name) { appContext.contentResolver.openInputStream(Uri.parse(uriStr)) }
     }
 }
