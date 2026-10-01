@@ -27,4 +27,8 @@ class StoragePathsTest {
         assertEquals("Download/Sieve/a_b", StoragePaths.outputRelativePath("a/b"))
         assertEquals("Download/Sieve/.._x", StoragePaths.sanitizeLabelSegment("../x").let { "Download/Sieve/$it" })
     }
+
+    @Test fun `archive file sits beside the work dir so wiping the work dir keeps it`() {
+        assertEquals("/data/app/files/work/job-42.archive.txt", StoragePaths.archiveFile("/data/app/files/", "job-42"))
+    }
 }

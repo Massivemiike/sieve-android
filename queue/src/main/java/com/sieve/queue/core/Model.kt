@@ -109,6 +109,8 @@ data class FailureInfo(
 )
 
 /** Returned by OutputLocationProvider.prepare(); work path is STABLE per job id
- *  so a resumed yt-dlp -c finds its own .part. */
-data class PreparedOutput(val workDir: String, val workFileTemplate: String)
+ *  so a resumed yt-dlp -c finds its own .part. [archivePath] is a per-job yt-dlp `--download-archive`
+ *  that lives OUTSIDE [workDir]: it remembers which entries already finished, so a Retry after files were
+ *  saved (and the work dir wiped) skips them instead of downloading and saving duplicates. */
+data class PreparedOutput(val workDir: String, val workFileTemplate: String, val archivePath: String? = null)
 data class FinalLocation(val displayPath: String, val uri: String?)

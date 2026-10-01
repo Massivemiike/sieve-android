@@ -52,6 +52,13 @@ object ProducedFiles {
         }
     }
 
+    /**
+     * True when [names] holds a finished video or audio file. [classify] only filters scratch, so it would
+     * call a lone thumbnail / subtitle / info.json an output; a failed run must not publish those as a result.
+     */
+    fun hasMedia(names: List<String>): Boolean =
+        names.any { !isScratch(it) && MimeMapper.extensionOf(it).let { ext -> ext in VIDEO || ext in AUDIO } }
+
     fun classify(names: List<String>, primaryHint: String? = null): ClassifiedOutput? {
         val real = names.filterNot { isScratch(it) }
         if (real.isEmpty()) return null

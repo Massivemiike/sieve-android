@@ -41,7 +41,10 @@ object ArgReconciler {
         a = stripFlagValue(a, "--paths")
         a = stripFlagValue(a, "-o")
         a = stripFlagValue(a, "--output")
-        return a + listOf("-P", prepared.workDir, "-o", byteSafeTemplate(prepared.workFileTemplate))
+        a = a + listOf("-P", prepared.workDir, "-o", byteSafeTemplate(prepared.workFileTemplate))
+        // A user-chosen archive wins; otherwise the job's own, so Retry never re-downloads finished entries.
+        val archive = prepared.archivePath
+        return if (archive != null && "--download-archive" !in a) a + listOf("--download-archive", archive) else a
     }
 
     /**

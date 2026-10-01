@@ -46,6 +46,23 @@ class ArgReconcilerTest {
         assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(title).150B [%(id)s].%(ext)s"), out)
     }
 
+    @Test fun `injectDownloadOutput points yt-dlp at the job's download archive`() {
+        val out = ArgReconciler.injectDownloadOutput(
+            listOf("-f", "best"),
+            PreparedOutput("/work/job-a", "%(id)s.%(ext)s", archivePath = "/work/job-a.archive.txt"),
+        )
+        assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(id)s.%(ext)s", "--download-archive", "/work/job-a.archive.txt"), out)
+    }
+
+    @Test fun `injectDownloadOutput leaves a download archive the caller already chose alone`() {
+        val out = ArgReconciler.injectDownloadOutput(
+            listOf("--download-archive", "/mine/archive.txt"),
+            PreparedOutput("/work/job-a", "%(id)s.%(ext)s", archivePath = "/work/job-a.archive.txt"),
+        )
+        assertEquals(1, out.count { it == "--download-archive" })
+        assertEquals("/mine/archive.txt", out[out.indexOf("--download-archive") + 1])
+    }
+
     @Test fun `byteSafeTemplate clamps an unbounded title and leaves others alone`() {
         assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
         assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))

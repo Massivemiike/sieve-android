@@ -218,6 +218,15 @@ private fun JobRow(
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("error_${job.id}"),
             )
+            // A failed playlist keeps the entries that finished (QueueManager.keepFinishedFiles). Only a Uri is a
+            // saved location: while a job runs, filePath holds a work-dir path that must not read as "saved".
+            if (OutputIntents.openableUri(job.filePath) != null) {
+                Text(
+                    "Finished files were saved",
+                    style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant,
+                    modifier = Modifier.testTag("saved_${job.id}"),
+                )
+            }
         }
     }
 }

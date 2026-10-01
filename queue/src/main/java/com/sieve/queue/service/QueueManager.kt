@@ -254,11 +254,33 @@ class QueueManager(
                     // NonCancellable: the FAILED dispatch just flipped the queue idle, which stops the service
                     // and cancels this scope — the failure must still be announced and the work dir cleaned.
                     withContext(NonCancellable) {
-                        output.discard(job, prepared)
-                        notifyFailed(job)
+                        val saved = keepFinishedFiles(job, prepared)
+                        notifyFailed(saved ?: _state.value.job(job.id) ?: job)
                     }
                 }
         }
+    }
+
+    /**
+     * Clears a FAILED job's work dir, after saving whatever finished in it. yt-dlp exits non-zero when ONE
+     * playlist entry fails, having downloaded the rest; discarding the dir would delete all of that, and no
+     * Retry could bring it back. The row stays FAILED (with the error and the saved location), and the per-job
+     * download archive makes its Retry skip the saved entries instead of saving duplicates. Downloads only: a
+     * failed ffmpeg run leaves a truncated file, which is no result. A failed save keeps the work dir (the
+     * finished files are still in it) for the Retry instead of deleting them. Returns the row when files were saved.
+     */
+    private suspend fun keepFinishedFiles(job: QueueJob, prepared: PreparedOutput): QueueJob? {
+        if (job.spec !is JobSpec.Download) { output.discard(job, prepared); return null }
+        val saved = try {
+            output.salvage(job, prepared)
+        } catch (t: Throwable) {
+            android.util.Log.e("SieveFin", "salvage FAILED id=${job.id}; keeping the work dir", t)
+            return null
+        }
+        if (saved == null) { output.discard(job, prepared); return null }
+        android.util.Log.i("SieveFin", "salvage OK id=${job.id} -> ${saved.displayPath} uri=${saved.uri}")
+        dispatch(QueueEvent.OutputSaved(job.id, saved.uri ?: saved.displayPath))
+        return _state.value.job(job.id)
     }
 
     /** The callback is best-effort (it posts a notification): its failure must never touch the queue. */

@@ -22,10 +22,15 @@ class FakeOutputProvider(
     private val finalUriPrefix: String? = null,
     /** When true, finalize throws (disk full, SAF revoked, ...). */
     private val failFinalize: Boolean = false,
+    /** What salvage reports for a failed run: where the finished files landed, or null = nothing finished. */
+    private val salvagedTo: FinalLocation? = null,
+    /** When true, salvage throws (the copy out of the work dir failed). */
+    private val failSalvage: Boolean = false,
 ) : OutputLocationProvider {
     val prepared = mutableListOf<String>()
     val finalized = mutableListOf<String>()
     val discarded = mutableListOf<String>()
+    val salvaged = mutableListOf<String>()
     override suspend fun prepare(job: QueueJob): PreparedOutput {
         prepareGate?.await() // when set, holds the job in PREPARING until released
         prepared += job.id
@@ -37,6 +42,11 @@ class FakeOutputProvider(
         return FinalLocation("/final/${job.id}", finalUriPrefix?.let { it + job.id })
     }
     override suspend fun discard(job: QueueJob, prepared: PreparedOutput) { discarded += job.id }
+    override suspend fun salvage(job: QueueJob, prepared: PreparedOutput): FinalLocation? {
+        salvaged += job.id
+        if (failSalvage) throw java.io.IOException("copy failed")
+        return salvagedTo
+    }
 }
 
 class InMemoryPersistence : QueuePersistence {

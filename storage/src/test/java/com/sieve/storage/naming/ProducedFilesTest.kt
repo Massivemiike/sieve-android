@@ -53,4 +53,12 @@ class ProducedFilesTest {
         assertNull(ProducedFiles.classify(emptyList()))
         assertNull(ProducedFiles.classify(listOf("x.part", "y.ytdl")))
     }
+
+    @Test fun `hasMedia needs a finished video or audio file`() {
+        assertTrue(ProducedFiles.hasMedia(listOf("a.mp4", "a.info.json")))
+        assertTrue(ProducedFiles.hasMedia(listOf("Song.OPUS", "Song.jpg")))
+        assertTrue(!ProducedFiles.hasMedia(emptyList()))
+        assertTrue(!ProducedFiles.hasMedia(listOf("a.mp4.part", "a.f137.mp4", "a.temp.mp4", "a.ytdl")))   // scratch only
+        assertTrue(!ProducedFiles.hasMedia(listOf("a.jpg", "a.webp", "a.en.vtt", "a.srt", "a.info.json")))  // sidecars only
+    }
 }

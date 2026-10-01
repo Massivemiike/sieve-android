@@ -15,6 +15,15 @@ interface OutputLocationProvider {
     suspend fun discard(job: QueueJob, prepared: PreparedOutput)
 
     /**
+     * Runs for a FAILED download BEFORE [discard]. yt-dlp exits non-zero when one playlist entry fails even
+     * though it saved the others, and the work dir holds those finished files. Publishes them like [finalize]
+     * (all-or-nothing) and clears the work dir, returning where they landed. Returns null — touching nothing,
+     * so the caller discards — when no finished video/audio exists: scratch (`.part`, fragments) and a lone
+     * thumbnail / subtitle / info.json are not a result. Throws when the copy fails, with the work dir intact.
+     */
+    suspend fun salvage(job: QueueJob, prepared: PreparedOutput): FinalLocation? = null
+
+    /**
      * Drops whatever work-dir leftovers a job has (partial files of a paused-then-cancelled job,
      * a failed finalize), without the caller holding its [PreparedOutput]. The work path is stable
      * per job id and [prepare] only creates it, so prepare-then-discard is safe and never touches the

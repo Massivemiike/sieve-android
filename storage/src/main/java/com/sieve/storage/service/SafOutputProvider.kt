@@ -4,6 +4,7 @@ import com.sieve.queue.core.FinalLocation
 import com.sieve.queue.core.PreparedOutput
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.service.OutputLocationProvider
+import com.sieve.storage.naming.ClassifiedOutput
 import com.sieve.storage.naming.CollisionResolver
 import com.sieve.storage.naming.FilenameSanitizer
 import com.sieve.storage.naming.MimeMapper
@@ -34,14 +35,27 @@ class SafOutputProvider(
         // Idempotent: only mkdirs; never wipe (yt-dlp -c resume relies on this).
         fs.mkdirs(workDir)
         val template = job.output.outputTemplate.takeIf { it.isNotBlank() } ?: defaultTemplate
-        return PreparedOutput(workDir = workDir, workFileTemplate = template)
+        return PreparedOutput(
+            workDir = workDir, workFileTemplate = template,
+            archivePath = StoragePaths.archiveFile(filesDirPath, job.id),
+        )
     }
 
     override suspend fun finalize(job: QueueJob, prepared: PreparedOutput): FinalLocation {
         val leaves = fs.listLeafNames(prepared.workDir)
         val classified = ProducedFiles.classify(leaves)
             ?: throw IllegalStateException("job ${job.id} produced no real output files")
+        return publish(job, prepared, classified)
+    }
 
+    /** A failed run's finished media goes to the destination too; with none, nothing is touched (null). */
+    override suspend fun salvage(job: QueueJob, prepared: PreparedOutput): FinalLocation? {
+        val leaves = fs.listLeafNames(prepared.workDir)
+        if (!ProducedFiles.hasMedia(leaves)) return null
+        return publish(job, prepared, ProducedFiles.classify(leaves) ?: return null)
+    }
+
+    private suspend fun publish(job: QueueJob, prepared: PreparedOutput, classified: ClassifiedOutput): FinalLocation {
         // Ordered: primary first so its resolved name drives the FinalLocation.
         val orderedLeaves = buildList {
             add(classified.primary)
@@ -82,7 +96,16 @@ class SafOutputProvider(
         return FinalLocation(displayPath = primaryTarget.relativeDisplay, uri = primaryTarget.uri)
     }
 
+    // The download archive survives a discard: the row may stay FAILED with its finished entries saved,
+    // and its Retry needs the archive to skip them.
     override suspend fun discard(job: QueueJob, prepared: PreparedOutput) {
         if (fs.exists(prepared.workDir)) fs.deleteRecursively(prepared.workDir)
+    }
+
+    /** The row is going away (or its paused partial was cancelled): nothing will retry, so the archive goes too. */
+    override suspend fun cleanup(job: QueueJob) {
+        val prepared = prepare(job)
+        discard(job, prepared)
+        prepared.archivePath?.let { if (fs.exists(it)) fs.deleteRecursively(it) }
     }
 }
