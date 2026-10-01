@@ -78,7 +78,10 @@ object QueueReducer {
             }
             is JobSignal.Log -> mapJob(state, job.id) { j ->
                 val newPhase = if (POSTPROCESS_RE.containsMatchIn(signal.line)) Phase.POSTPROCESS else j.progress.phase
-                val fp = signal.filePath ?: FILEPATH_RE.find(signal.line)?.groupValues?.get(1) ?: j.filePath
+                // A saved location (a salvaged run's, kept through its Retry) is not overwritten by the work-dir
+                // path the new run logs; only OutputSaved replaces it.
+                val fp = if (j.hasSavedOutput) j.filePath
+                else signal.filePath ?: FILEPATH_RE.find(signal.line)?.groupValues?.get(1) ?: j.filePath
                 j.copy(
                     progress = j.progress.copy(phase = newPhase), filePath = fp,
                     logsTail = (j.logsTail + signal.line.take(500)).takeLast(200),

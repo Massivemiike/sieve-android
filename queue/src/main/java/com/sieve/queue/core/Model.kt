@@ -85,6 +85,11 @@ data class QueueJob(
     }
     /** yt-dlp -c continues a partial; ffmpeg cannot resume a partial output. */
     val resumable: Boolean get() = spec is JobSpec.Download
+    /**
+     * True once [filePath] is where the sink saved the output (its `content://` / `file://` Uri), as opposed to
+     * the work-dir path yt-dlp logs mid-run. A failed run's saved files stay reachable across its Retry.
+     */
+    val hasSavedOutput: Boolean get() = filePath?.trim()?.let { it.startsWith("content://") || it.startsWith("file://") } == true
 }
 
 /** Normalized event algebra the reducer consumes. Drivers (Task 11) collapse
