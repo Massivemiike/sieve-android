@@ -42,7 +42,8 @@ object QueueReducer {
         is QueueEvent.Retry -> mapJob(state, event.id) {
             if (it.status == DownloadStatus.FAILED)
                 it.copy(
-                    status = DownloadStatus.QUEUED, error = null, attempt = it.attempt + 1, nextEligibleAt = 0L,
+                    // A manual Retry gets a fresh auto-retry budget (the desktop re-adds it as a new item).
+                    status = DownloadStatus.QUEUED, error = null, attempt = 0, nextEligibleAt = 0L,
                     completedAt = null, cancelReason = null, progress = UnifiedProgress(phase = Phase.QUEUED),
                 ) else it
         }
@@ -97,7 +98,7 @@ object QueueReducer {
                     completedAt = NOW(), cancelReason = null,
                 )
                 is Outcome.Failed -> {
-                    val cls = RetryClassifier.classify(outcome.info)
+                    val cls = RetryClassifier.classify(outcome.info, it.kind)
                     val canAuto = cls == RetryClass.TRANSIENT && it.attempt < state.retryPolicy.maxAutoRetries
                     if (canAuto) it.copy(
                         status = DownloadStatus.QUEUED, attempt = it.attempt + 1,

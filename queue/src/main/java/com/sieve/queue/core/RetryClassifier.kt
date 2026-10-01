@@ -1,19 +1,22 @@
 package com.sieve.queue.core
 
+import com.sieve.engine.parse.YtdlpErrors
+
 enum class RetryClass { TRANSIENT, PERMANENT }
 
 data class RetryPolicy(val maxAutoRetries: Int = 1, val backoffMs: Long = 5_000L)
 
 /**
- * Decides whether a [FailureInfo] should auto-retry. Ports the desktop transient regex plus 5xx
- * and fragment failures, with an explicit permanent-error list checked FIRST.
+ * Decides whether a [FailureInfo] should auto-retry.
  *
- * `\bage\b` is word-boundaried on purpose: a bare `age` token matches "webpage"/"message" and would
- * misclassify transient failures (e.g. "Unable to download webpage: throttled") as permanent.
- * Unknown failures default to PERMANENT — never auto-retry something we don't recognize.
+ * Downloads are decided exactly as on desktop (`human.transient` in App.tsx): by the same yt-dlp rule
+ * table that words the message the user reads ([YtdlpErrors], in rule order — rate limit, 403 and network
+ * failures are transient, private/login/geo/removed are not). It matches yt-dlp's ERROR lines only (a
+ * WARNING line never decides) with URLs blanked, so a slug like `/login/` or `/403-error` can't either.
+ * Everything else is PERMANENT: never auto-retry something we don't recognize.
  *
- * URLs are blanked before matching: download failures now carry yt-dlp's real ERROR text, which echoes
- * URLs, and a slug like `/login/` or `/403-error` must not decide the verdict.
+ * Transcodes keep the substring verdict below: ffmpeg's stderr has no `ERROR:` lines or yt-dlp phrasing.
+ * `\bage\b` is word-boundaried on purpose: a bare `age` token matches "webpage"/"message".
  */
 object RetryClassifier {
 
@@ -30,7 +33,21 @@ object RetryClassifier {
 
     private val URL = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
 
-    fun classify(info: FailureInfo): RetryClass {
+    fun classify(info: FailureInfo, kind: JobKind): RetryClass = when (kind) {
+        JobKind.DOWNLOAD -> classifyDownload(info)
+        JobKind.TRANSCODE -> classifyTranscode(info)
+    }
+
+    /**
+     * `message` is already the ERROR lines (cut to 500 chars) and `stderrTail` the whole blob; the rule table
+     * keeps only the ERROR lines of both, so a long first line can't hide the line that carries the verdict.
+     */
+    private fun classifyDownload(info: FailureInfo): RetryClass {
+        val text = listOfNotNull(info.message, info.stderrTail).joinToString("\n")
+        return if (YtdlpErrors.humanize(text).transient) RetryClass.TRANSIENT else RetryClass.PERMANENT
+    }
+
+    private fun classifyTranscode(info: FailureInfo): RetryClass {
         val haystack = buildString {
             append(info.message)
             info.stderrTail?.let { append('\n').append(it) }

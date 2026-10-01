@@ -184,7 +184,9 @@ class YtDlpEngineImpl(
         withContext(io) {
             // First attempt: the URL form analyze settled on, else the deterministic normalization.
             var target = settledUrls[url] ?: settledUrls[url.trim()] ?: SiteRules.normalizeUrl(url)
-            var runArgs = listOf("--encoding", "utf-8") + args
+            // --no-warnings as on desktop (CLAUDE.md): it keeps WARNING lines out of the failure text that the
+            // retry verdict and the humanizer read. Analyze keeps its warnings (VideoInfo.warnings).
+            var runArgs = listOf("--encoding", "utf-8", "--no-warnings") + args
             // Each recovery runs at most once per download.
             val tried = mutableSetOf<String>()
             var drmStderr: String? = null

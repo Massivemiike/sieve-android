@@ -88,11 +88,28 @@ class QueueReducerTest {
     @Test fun `terminal Failed permanent goes FAILED immediately`() {
         val s = r(
             QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING))),
-            QueueEvent.Signal(JobSignal.Terminal("a", Outcome.Failed(FailureInfo("HTTP Error 403")))),
+            QueueEvent.Signal(JobSignal.Terminal("a", Outcome.Failed(FailureInfo("HTTP Error 404")))),
         )
         val j = s.job("a")!!
         assertEquals(DownloadStatus.FAILED, j.status)
-        assertEquals("HTTP Error 403", j.error)
+        assertEquals("HTTP Error 404", j.error)
+    }
+
+    // Desktop humanizer: 403 is `transient: true` and gets its one automatic retry.
+    @Test fun `a 403 download failure auto-retries once`() {
+        val s = r(
+            QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING))),
+            QueueEvent.Signal(JobSignal.Terminal("a", Outcome.Failed(FailureInfo("ERROR: unable to download video data: HTTP Error 403: Forbidden")))),
+        )
+        assertEquals(DownloadStatus.QUEUED, s.job("a")!!.status)
+    }
+
+    @Test fun `a transcode failure keeps the ffmpeg-side verdict`() {
+        val s = r(
+            QueueState(jobs = listOf(tx("t", DownloadStatus.RUNNING))),
+            QueueEvent.Signal(JobSignal.Terminal("t", Outcome.Failed(FailureInfo("exit 1", 1, stderrTail = "Unknown encoder 'libx265'")))),
+        )
+        assertEquals(DownloadStatus.FAILED, s.job("t")!!.status)
     }
 
     @Test fun `terminal Cancelled with PAUSE reason goes PAUSED and resets speed eta`() {
@@ -147,7 +164,8 @@ class QueueReducerTest {
         assertEquals(CancelReason.USER_CANCEL, s.job("a")!!.cancelReason)
     }
 
-    @Test fun `manual retry resets an error row to QUEUED and bumps attempt`() {
+    // Like the desktop's Retry (a fresh item, a fresh single auto-retry): a manual Retry must not spend the budget.
+    @Test fun `manual retry resets an error row to QUEUED with a fresh auto-retry budget`() {
         val s = r(
             QueueState(jobs = listOf(dl("a", DownloadStatus.FAILED, attempt = 1).copy(error = "boom"))),
             QueueEvent.Retry("a"),
@@ -155,8 +173,17 @@ class QueueReducerTest {
         val j = s.job("a")!!
         assertEquals(DownloadStatus.QUEUED, j.status)
         assertNull(j.error)
-        assertEquals(2, j.attempt)
+        assertEquals(0, j.attempt)
         assertEquals(0f, j.progress.fraction ?: 0f, 1e-4f)
+    }
+
+    @Test fun `a transient failure after a manual retry still auto-retries once`() {
+        val failed = dl("a", DownloadStatus.FAILED, attempt = 1).copy(error = "timed out")
+        val retried = r(QueueState(jobs = listOf(failed)), QueueEvent.Retry("a"))
+        val running = QueueState(jobs = listOf(retried.job("a")!!.copy(status = DownloadStatus.RUNNING)))
+        val s = r(running, QueueEvent.Signal(JobSignal.Terminal("a", Outcome.Failed(FailureInfo("ERROR: The read operation timed out")))))
+        assertEquals(DownloadStatus.QUEUED, s.job("a")!!.status)
+        assertEquals(1, s.job("a")!!.attempt)
     }
 
     @Test fun `remove deletes the row`() {

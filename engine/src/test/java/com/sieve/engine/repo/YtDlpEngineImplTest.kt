@@ -312,11 +312,20 @@ class YtDlpEngineImplDownloadTest {
         assertFalse(events.any { it is EngineEvent.Completed })
     }
 
-    @Test fun encodingFlagIsPrependedAndTheRestOfTheArgsAreUntouched() = runTest {
+    // Desktop CLAUDE.md: "Must always pass --no-warnings to downloads (analyze keeps warnings)". It keeps WARNING
+    // lines out of the failure text the retry verdict and the humanizer read.
+    @Test fun encodingAndNoWarningsFlagsArePrependedAndTheRestOfTheArgsAreUntouched() = runTest {
         val client = FakeClient()
         newEngine(client).download("id1", "u", args).toList()
         val opts = client.calls.single().options
-        assertEquals(listOf("--encoding", "utf-8") + args, opts)
+        assertEquals(listOf("--encoding", "utf-8", "--no-warnings") + args, opts)
+    }
+
+    @Test fun noWarningsSurvivesEveryRecoveryRetry() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(DRM_ERR), threw(EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(3, client.calls.size)
+        assertTrue(client.calls.all { it.options.count { o -> o == "--no-warnings" } == 1 })
     }
 
     @Test fun downloadNormalizesLinkedinUrl() = runTest {

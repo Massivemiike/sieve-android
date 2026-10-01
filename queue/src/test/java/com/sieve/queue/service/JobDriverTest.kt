@@ -4,6 +4,7 @@ import app.cash.turbine.test
 import com.sieve.engine.model.DownloadProgress
 import com.sieve.engine.repo.EngineEvent
 import com.sieve.queue.core.CancelReason
+import com.sieve.queue.core.JobKind
 import com.sieve.queue.core.JobSignal
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.Outcome
@@ -64,7 +65,7 @@ class JobDriverTest {
             assertEquals(1, info.exitCode)
             assertEquals(blob, info.stderrTail)
             // the whole point: the queue's retry policy now sees a real 429
-            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info))
+            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info, JobKind.DOWNLOAD))
             awaitComplete()
         }
     }
@@ -76,7 +77,23 @@ class JobDriverTest {
             awaitItem() // log
             val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
             assertEquals(blob, info.message)
-            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info))
+            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info, JobKind.DOWNLOAD))
+            awaitComplete()
+        }
+    }
+
+    // The thrown/returned stderr is the whole blob: WARNING lines (here a PO-token one that mentions 403 and a
+    // login one) must not stop the real, transient ERROR from getting its automatic retry.
+    @Test fun `warning lines in the failure blob do not decide the retry verdict`() = runTest {
+        val blob = "WARNING: [youtube] abc: formats may be skipped as they may yield HTTP Error 403\n" +
+            "WARNING: [youtube] abc: Sign in to confirm your age. This video is not available\n" +
+            "ERROR: [youtube] abc: Unable to download webpage: The read operation timed out\n"
+        val ports = FakeDownloadPort { flow { emit(EngineEvent.Log(blob, null, true)); emit(EngineEvent.Completed(1)) } }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            awaitItem()
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals(blob, info.stderrTail)
+            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info, JobKind.DOWNLOAD))
             awaitComplete()
         }
     }
@@ -88,7 +105,7 @@ class JobDriverTest {
             awaitItem()
             val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
             assertEquals("java.lang.IllegalStateException: instance not initialized", info.message)
-            assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(info))
+            assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(info, JobKind.DOWNLOAD))
             awaitComplete()
         }
     }
