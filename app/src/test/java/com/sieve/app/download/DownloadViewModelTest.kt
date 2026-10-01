@@ -67,6 +67,38 @@ class DownloadViewModelTest {
         vm.analyze()
         advanceUntilIdle()
         assertTrue(vm.state.value.error!!.contains("Rate-limited"))
+        assertEquals("Wait a few minutes and retry.", vm.state.value.errorHint)
+    }
+
+    @Test fun analyzeFailureStoresMessageAndHintSeparately() = runTest {
+        val blob = "WARNING: [youtube] abc: Sign in to confirm your age. Some formats may be missing\n" +
+            "ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests\n"
+        val vm = vm(AnalyzeOutcome.Failure(blob), mutableListOf())
+        vm.onUrlChange("https://x/y")
+        vm.analyze()
+        advanceUntilIdle()
+        assertEquals("Rate-limited by the site", vm.state.value.error)
+        assertEquals("Wait a few minutes and retry.", vm.state.value.errorHint)
+        assertEquals(false, vm.state.value.analyzing)
+    }
+
+    @Test fun analyzeFailureWithoutHintHasNullHint() = runTest {
+        val vm = vm(AnalyzeOutcome.Failure("ERROR: [youtube] abc: Video unavailable"), mutableListOf())
+        vm.onUrlChange("https://x/y")
+        vm.analyze()
+        advanceUntilIdle()
+        assertEquals("Not available — it may have been removed or made private", vm.state.value.error)
+        assertNull(vm.state.value.errorHint)
+    }
+
+    @Test fun editingTheUrlClearsErrorAndHint() = runTest {
+        val vm = vm(AnalyzeOutcome.Failure("ERROR: HTTP Error 429: Too Many Requests"), mutableListOf())
+        vm.onUrlChange("https://x/y")
+        vm.analyze()
+        advanceUntilIdle()
+        vm.onUrlChange("https://x/z")
+        assertNull(vm.state.value.error)
+        assertNull(vm.state.value.errorHint)
     }
 
     @Test fun downloadBuildsJobFromPresetAndInfo() = runTest {

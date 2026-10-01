@@ -45,6 +45,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
 import com.sieve.app.ui.common.ChipKind
 import com.sieve.app.ui.common.EmptyState
+import com.sieve.app.ui.common.ErrorHumanizer
 import com.sieve.app.ui.common.SieveChip
 import com.sieve.app.ui.common.SieveProgress
 import com.sieve.queue.core.DownloadStatus
@@ -157,6 +158,15 @@ private fun JobRow(
             val pct = job.progress.fraction?.let { "${(it * 100).toInt()}%" } ?: "—"
             val meta = listOfNotNull(pct, job.progress.speed, job.progress.eta?.let { "$it left" }).joinToString(" · ")
             Text(meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+        }
+        if (job.status == DownloadStatus.FAILED && !job.error.isNullOrBlank()) {
+            // job.error is yt-dlp's raw ERROR text (kept raw so retry classification sees real signals).
+            Text(
+                ErrorHumanizer.humanize(job.error),
+                style = MaterialTheme.typography.labelSmall, color = cs.error,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("error_${job.id}"),
+            )
         }
     }
 }

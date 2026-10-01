@@ -16,6 +16,7 @@ import com.sieve.engine.repo.YoutubeDLClientImpl
 import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.engine.repo.YtDlpEngineImpl
 import com.sieve.engine.update.GithubReleaseApiImpl
+import com.sieve.queue.core.awaitNoActiveDownload
 import com.sieve.queue.service.JobDriver
 import com.sieve.queue.service.QueueManager
 import com.sieve.queue.service.QueueRepository
@@ -101,17 +102,29 @@ object AppGraph {
      * box), so a fresh install MUST self-update before it can download. Throttled to once per 12h;
      * failures are silent (offline first launch just tries again next open, and Settings keeps the
      * manual Update button).
+     *
+     * The library's updater deletes and recreates the yt-dlp directory IN PLACE, so it must never run
+     * underneath a live download: this first waits (up to 2 h) until no download is PREPARING/RUNNING
+     * and skips the update if that never happens. The 12 h throttle is stamped only when the update
+     * actually succeeded, so a failed or skipped attempt is retried on the next open.
      */
     private fun autoUpdateYtDlp(scope: CoroutineScope) {
         val key = androidx.datastore.preferences.core.longPreferencesKey("ytdlp_auto_updated_at")
         scope.launch {
             runCatching {
                 val last = prefs.data.first()[key] ?: 0L
-                val now = System.currentTimeMillis()
-                if (now - last < 12 * 60 * 60 * 1000L) return@launch
-                engine.doUpdate(com.sieve.engine.update.UpdateChannel.STABLE)
-                prefs.edit { it[key] = now }
-                android.util.Log.i("SieveEngine", "yt-dlp auto-update done (now ${engine.version()})")
+                if (System.currentTimeMillis() - last < 12 * 60 * 60 * 1000L) return@launch
+                if (!queue.state.awaitNoActiveDownload(timeoutMs = 2 * 60 * 60 * 1000L, settleMs = 5_000L)) {
+                    android.util.Log.i("SieveEngine", "yt-dlp auto-update skipped: downloads still running")
+                    return@launch
+                }
+                val result = engine.doUpdate(com.sieve.engine.update.UpdateChannel.STABLE)
+                if (result.ok) {
+                    prefs.edit { it[key] = System.currentTimeMillis() }
+                    android.util.Log.i("SieveEngine", "yt-dlp auto-update done (now ${engine.version()})")
+                } else {
+                    android.util.Log.w("SieveEngine", "yt-dlp auto-update failed: ${result.output}")
+                }
             }.onFailure { android.util.Log.w("SieveEngine", "yt-dlp auto-update skipped: ${it.message}") }
         }
     }

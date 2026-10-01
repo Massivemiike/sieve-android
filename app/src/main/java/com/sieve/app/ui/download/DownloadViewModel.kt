@@ -3,11 +3,11 @@ package com.sieve.app.ui.download
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sieve.app.di.AppGraph
-import com.sieve.app.ui.common.ErrorHumanizer
 import com.sieve.engine.args.DownloadArgsOptions
 import com.sieve.engine.args.EngineSettings
 import com.sieve.engine.args.YtdlpArgs
 import com.sieve.engine.model.VideoInfo
+import com.sieve.engine.parse.YtdlpErrors
 import com.sieve.engine.repo.AnalyzeOutcome
 import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.queue.core.JobSpec
@@ -24,7 +24,9 @@ data class DownloadUiState(
     val url: String = "",
     val analyzing: Boolean = false,
     val analyzed: VideoInfo? = null,
+    /** Humanized analyze failure: [error] is the headline, [errorHint] the actionable second line. */
     val error: String? = null,
+    val errorHint: String? = null,
     val selectedPresetId: String = "best-video",
     val presets: List<DownloadPreset> = DownloadPresets.ALL,
 ) {
@@ -51,7 +53,7 @@ class DownloadViewModel(
     val state: StateFlow<DownloadUiState> = _state.asStateFlow()
 
     fun onUrlChange(url: String) {
-        _state.value = _state.value.copy(url = url, error = null)
+        _state.value = _state.value.copy(url = url, error = null, errorHint = null)
     }
 
     fun selectPreset(id: String) {
@@ -65,13 +67,15 @@ class DownloadViewModel(
     fun analyze() {
         val url = _state.value.url.trim()
         if (url.isEmpty() || _state.value.analyzing) return
-        _state.value = _state.value.copy(analyzing = true, error = null)
+        _state.value = _state.value.copy(analyzing = true, error = null, errorHint = null)
         viewModelScope.launch {
             when (val outcome = engine.analyze(url, null)) {
                 is AnalyzeOutcome.Success ->
-                    _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, error = null)
-                is AnalyzeOutcome.Failure ->
-                    _state.value = _state.value.copy(analyzing = false, error = ErrorHumanizer.humanize(outcome.message))
+                    _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, error = null, errorHint = null)
+                is AnalyzeOutcome.Failure -> {
+                    val h = YtdlpErrors.humanize(outcome.message)
+                    _state.value = _state.value.copy(analyzing = false, error = h.message, errorHint = h.hint)
+                }
             }
         }
     }

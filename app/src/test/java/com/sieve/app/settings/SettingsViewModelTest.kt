@@ -16,11 +16,13 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -28,6 +30,8 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import java.io.File
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
@@ -36,13 +40,75 @@ class SettingsViewModelTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private class FakeEngine : YtDlpEngine {
+    private class FakeEngine(private val update: () -> UpdateResult = { throw NotImplementedError() }) : YtDlpEngine {
+        var updateCalls = 0
         override suspend fun analyze(url: String, cookiesBrowser: String?): AnalyzeOutcome = throw NotImplementedError()
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
         override suspend fun version(): String? = "2025.01.01"
         override suspend fun checkUpdate(): UpdateCheck = throw NotImplementedError()
-        override suspend fun doUpdate(channel: UpdateChannel): UpdateResult = throw NotImplementedError()
+        override suspend fun doUpdate(channel: UpdateChannel): UpdateResult { updateCalls++; return update() }
+    }
+
+    @After
+    fun tearDown() = Dispatchers.resetMain()
+
+    /** A VM whose viewModelScope runs eagerly on the test scheduler. */
+    private fun TestScope.newVm(engine: YtDlpEngine, downloadActive: () -> Boolean = { false }): SettingsViewModel {
+        Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+        val store = PreferenceDataStoreFactory.create(
+            scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
+        ) { File(tmp.newFolder(), "s.preferences_pb") }
+        return SettingsViewModel(AppSettings(store), StorageSettings(store), engine, downloadActive)
+    }
+
+    @Test
+    fun updateIsRefusedWhileADownloadRuns() = runTest {
+        val engine = FakeEngine { UpdateResult(true, "DONE") }
+        val vm = newVm(engine, downloadActive = { true })
+        vm.updateEngine()
+        val s = vm.state.first { it.updateMessage != null }
+        assertEquals("Wait for downloads to finish before updating yt-dlp.", s.updateMessage)
+        assertFalse(s.updating)
+        assertEquals(0, engine.updateCalls)
+    }
+
+    @Test
+    fun updateRunsWhenIdleAndReportsSuccess() = runTest {
+        val engine = FakeEngine { UpdateResult(true, "DONE") }
+        val vm = newVm(engine)
+        vm.updateEngine()
+        val s = vm.state.first { it.updateMessage != null }
+        assertEquals("Engine updated", s.updateMessage)
+        assertFalse(s.updating)
+        assertEquals(1, engine.updateCalls)
+    }
+
+    @Test
+    fun updateReportsFailureWhenResultIsNotOk() = runTest {
+        val engine = FakeEngine { UpdateResult(false, "failed to update youtube-dl") }
+        val vm = newVm(engine)
+        vm.updateEngine()
+        val s = vm.state.first { it.updateMessage != null }
+        assertTrue(s.updateMessage!!.startsWith("Update failed"), s.updateMessage)
+        assertTrue("failed to update youtube-dl" in s.updateMessage!!, s.updateMessage)
+        assertFalse(s.updateMessage!!.contains("Engine updated"))
+    }
+
+    @Test
+    fun updateReportsFailureWhenEngineThrows() = runTest {
+        val engine = FakeEngine { throw IllegalStateException("boom") }
+        val vm = newVm(engine)
+        vm.updateEngine()
+        val s = vm.state.first { it.updateMessage != null }
+        assertEquals("Update failed: boom", s.updateMessage)
+    }
+
+    @Test
+    fun updateFailureWithBlankDetailIsJustUpdateFailed() = runTest {
+        val vm = newVm(FakeEngine { UpdateResult(false, "  ") })
+        vm.updateEngine()
+        assertEquals("Update failed", vm.state.first { it.updateMessage != null }.updateMessage)
     }
 
     @Test

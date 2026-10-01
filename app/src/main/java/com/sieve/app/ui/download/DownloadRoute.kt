@@ -105,7 +105,7 @@ fun DownloadScreen(
             }
 
             state.error?.let { err ->
-                item { ErrorBanner(err, onAnalyze) }
+                item { ErrorBanner(err, state.errorHint) }
             }
             state.analyzed?.let { info ->
                 item { VideoInfoCard(info) }
@@ -222,15 +222,18 @@ private fun UrlCard(state: DownloadUiState, onUrlChange: (String) -> Unit, onAna
 }
 
 @Composable
-private fun ErrorBanner(message: String, onRetry: () -> Unit) {
+private fun ErrorBanner(message: String, hint: String?) {
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
             .background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
             .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.3f), RoundedCornerShape(12.dp)).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text("Analysis failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-        Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        // Humanized message is the title; the actionable hint (when there is one) is the second line.
+        Text(message, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+        if (!hint.isNullOrBlank()) {
+            Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Text("You can still download — pick a preset and tap Download.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

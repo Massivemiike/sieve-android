@@ -9,11 +9,14 @@ import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.Outcome
 import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
+import com.sieve.queue.core.RetryClass
+import com.sieve.queue.core.RetryClassifier
 import com.sieve.transcode.runner.FfmpegProgress
 import com.sieve.transcode.runner.TranscodeEvent
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -40,6 +43,81 @@ class JobDriverTest {
         val ports = FakeDownloadPort { flow { emit(EngineEvent.Completed(1)) } }
         JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
             assertTrue((awaitItem() as JobSignal.Terminal).outcome is Outcome.Failed)
+            awaitComplete()
+        }
+    }
+
+    @Test fun `download failure carries the ERROR line, not just the exit code`() = runTest {
+        val blob = "WARNING: [youtube] abc: Some formats may be missing\n" +
+            "ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests\n"
+        val ports = FakeDownloadPort {
+            flow {
+                emit(EngineEvent.Log(blob, null, true))
+                emit(EngineEvent.Completed(1))
+            }
+        }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            assertTrue((awaitItem() as JobSignal.Log).isError) // still forwarded to the row's log
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals("ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests", info.message)
+            assertFalse("WARNING" in info.message)
+            assertEquals(1, info.exitCode)
+            assertEquals(blob, info.stderrTail)
+            // the whole point: the queue's retry policy now sees a real 429
+            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info))
+            awaitComplete()
+        }
+    }
+
+    @Test fun `download failure network error classifies transient`() = runTest {
+        val blob = "ERROR: [youtube] abc: Unable to download webpage: The read operation timed out"
+        val ports = FakeDownloadPort { flow { emit(EngineEvent.Log(blob, null, true)); emit(EngineEvent.Completed(1)) } }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            awaitItem() // log
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals(blob, info.message)
+            assertEquals(RetryClass.TRANSIENT, RetryClassifier.classify(info))
+            awaitComplete()
+        }
+    }
+
+    @Test fun `download failure without an ERROR line uses the last non-blank line`() = runTest {
+        val blob = "java.lang.IllegalStateException: instance not initialized\n\n"
+        val ports = FakeDownloadPort { flow { emit(EngineEvent.Log(blob, null, true)); emit(EngineEvent.Completed(1)) } }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            awaitItem()
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals("java.lang.IllegalStateException: instance not initialized", info.message)
+            assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(info))
+            awaitComplete()
+        }
+    }
+
+    @Test fun `download failure message is capped and stderrTail keeps the last 4000 chars`() = runTest {
+        val blob = "ERROR: " + "x".repeat(6000)
+        val ports = FakeDownloadPort { flow { emit(EngineEvent.Log(blob, null, true)); emit(EngineEvent.Completed(1)) } }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            awaitItem()
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals(500, info.message.length)
+            assertEquals(4000, info.stderrTail!!.length)
+            awaitComplete()
+        }
+    }
+
+    @Test fun `non-error logs do not become the failure message`() = runTest {
+        val ports = FakeDownloadPort {
+            flow {
+                emit(EngineEvent.Log("[download] Destination: x.mp4", null, false))
+                emit(EngineEvent.Completed(2))
+            }
+        }
+        JobDriver(ports, FakeTranscodePort()).drive(dl("a")) { null }.test {
+            awaitItem() // log
+            val info = ((awaitItem() as JobSignal.Terminal).outcome as Outcome.Failed).info
+            assertEquals("yt-dlp exited 2", info.message)
+            assertEquals(2, info.exitCode)
+            assertNull(info.stderrTail)
             awaitComplete()
         }
     }
