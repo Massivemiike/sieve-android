@@ -77,6 +77,61 @@ class ImpersonationInstallerTest {
         assertEquals("v2\n", File(sp, ImpersonationInstaller.MARKER).readText())
     }
 
+    @Test fun upgradeDropsTheOldVersionsDistInfoSoMetadataCannotReportTheOldVersion() {
+        val sp = pythonTree()
+        ImpersonationInstaller.install(sp, "v1") { ByteArrayInputStream(bundle) }          // ships curl_cffi-0.16.3.dist-info
+        File(sp, "mutagen-1.47.0.dist-info").mkdirs(); File(sp, "mutagen-1.47.0.dist-info/METADATA").writeText("keep")
+        val v2 = zipOf(
+            "curl_cffi/__init__.py" to "init2",
+            "curl_cffi-0.17.0.dist-info/METADATA" to "Name: curl_cffi\nVersion: 0.17.0",
+        )
+        ImpersonationInstaller.install(sp, "v2") { ByteArrayInputStream(v2) }
+
+        assertFalse(File(sp, "curl_cffi-0.16.3.dist-info").exists())
+        assertEquals("Name: curl_cffi\nVersion: 0.17.0", File(sp, "curl_cffi-0.17.0.dist-info/METADATA").readText())
+        assertEquals("keep", File(sp, "mutagen-1.47.0.dist-info/METADATA").readText())     // not ours: untouched
+    }
+
+    @Test fun staleMetadataFromAnInstallThatPredatesTheFixIsCleanedToo() {
+        // site-packages as an older app version left it: no manifest of what was installed, just the dirs.
+        val sp = pythonTree()
+        for (d in listOf("curl_cffi-0.16.3.dist-info", "cffi-2.0.0.dist-info", "certifi-2026.7.22.dist-info", "numpy-1.0.dist-info")) {
+            File(sp, "$d").mkdirs(); File(sp, "$d/METADATA").writeText("old")
+        }
+        File(sp, ImpersonationInstaller.MARKER).writeText("old-version\n")
+        val v2 = zipOf(
+            "curl_cffi-0.17.0.dist-info/METADATA" to "new", "cffi-2.1.0.dist-info/METADATA" to "new",
+            "certifi-2026.8.1.dist-info/METADATA" to "new",
+        )
+        ImpersonationInstaller.install(sp, "v2") { ByteArrayInputStream(v2) }
+
+        assertEquals(
+            setOf("curl_cffi-0.17.0.dist-info", "cffi-2.1.0.dist-info", "certifi-2026.8.1.dist-info", "numpy-1.0.dist-info"),
+            sp.list()!!.filter { it.endsWith(".dist-info") }.toSet(),
+        )
+    }
+
+    @Test fun aDistributionIsNotMistakenForOneWithALongerName() {
+        // Shipping cffi-*.dist-info must not remove curl_cffi-*.dist-info (or the other way round).
+        val sp = pythonTree()
+        File(sp, "curl_cffi-0.16.3.dist-info").mkdirs()
+        File(sp, "cffi-2.0.0.dist-info").mkdirs()
+        ImpersonationInstaller.install(sp, "v2") { ByteArrayInputStream(zipOf("cffi-2.1.0.dist-info/METADATA" to "new")) }
+
+        assertTrue(File(sp, "curl_cffi-0.16.3.dist-info").isDirectory)
+        assertFalse(File(sp, "cffi-2.0.0.dist-info").exists())
+        assertTrue(File(sp, "cffi-2.1.0.dist-info").isDirectory)
+    }
+
+    @Test fun egg_infoOfAShippedDistributionIsReplacedToo() {
+        val sp = pythonTree()
+        File(sp, "oldpkg-1.0-py3.12.egg-info").mkdirs()
+        ImpersonationInstaller.install(sp, "v2") { ByteArrayInputStream(zipOf("oldpkg-2.0-py3.12.egg-info/PKG-INFO" to "new")) }
+
+        assertFalse(File(sp, "oldpkg-1.0-py3.12.egg-info").exists())
+        assertTrue(File(sp, "oldpkg-2.0-py3.12.egg-info/PKG-INFO").isFile)
+    }
+
     @Test fun skipsWhenThePythonIsNot312() {
         val lib = File(tmp.root, "youtubedl-android/packages/python/usr/lib/python3.13").apply { mkdirs() }
         val outcome = ImpersonationInstaller.install(ImpersonationInstaller.sitePackages(tmp.root), "v1") {

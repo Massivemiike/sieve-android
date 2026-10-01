@@ -30,9 +30,11 @@ object ImpersonationInstaller {
         File(noBackupDir, "youtubedl-android/packages/python/usr/lib/python3.12/site-packages")
 
     /**
-     * Unpacks the bundle into [sitePackages] unless the marker already names [version]. The marker
-     * is written last, so an interrupted install is redone on the next start. The library re-extracts
-     * its Python (dropping site-packages) when it updates, which also triggers a reinstall.
+     * Unpacks the bundle into [sitePackages] unless the marker already names [version]. [version] must
+     * change whenever the zip's bytes do (build.sh appends the zip's SHA-256 to it), or a rebuilt bundle
+     * would never replace an installed one. The marker is written last, so an interrupted install is
+     * redone on the next start. The library re-extracts its Python (dropping site-packages) when it
+     * updates, which also triggers a reinstall.
      */
     fun install(sitePackages: File, version: String, openZip: () -> InputStream): Outcome {
         val pythonLib = sitePackages.parentFile
@@ -49,6 +51,12 @@ object ImpersonationInstaller {
             ZipInputStream(input).use { zip -> generateSequence { zip.nextEntry }.map { it.name.substringBefore('/') }.toSet() }
         }
         for (name in owned) resolveInside(root, name).deleteRecursively()
+        // Metadata directories carry the version in their NAME (curl_cffi-0.16.3.dist-info), so a bumped
+        // component would leave the old one beside the new one, and importlib.metadata.version() may answer
+        // with either. Drop every other version of each distribution this bundle ships (this also cleans
+        // installs made before this ran, which no manifest could).
+        val shipped = owned.mapNotNull(::distributionOf).toSet()
+        sitePackages.list().orEmpty().filter { distributionOf(it) in shipped }.forEach { resolveInside(root, it).deleteRecursively() }
 
         openZip().use { input ->
             ZipInputStream(input).use { zip ->
@@ -66,6 +74,13 @@ object ImpersonationInstaller {
         }
         marker.writeText("$wanted\n")
         return Outcome.Installed
+    }
+
+    /** The normalized distribution of a `<name>-<version>.dist-info` / `.egg-info` entry; null for anything else. */
+    private fun distributionOf(entry: String): String? {
+        val base = listOf(".dist-info", ".egg-info").firstNotNullOfOrNull { suffix -> entry.takeIf { it.endsWith(suffix) }?.removeSuffix(suffix) }
+            ?: return null
+        return base.substringBefore('-').lowercase().replace('.', '_')
     }
 
     private fun resolveInside(root: File, name: String): File {
