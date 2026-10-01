@@ -30,6 +30,9 @@ import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 class YtDlpEngineImpl(
     private val client: YoutubeDLClient,
@@ -42,6 +45,14 @@ class YtDlpEngineImpl(
 
     private val gate = Semaphore(analyzeConcurrency)
     private val cancelledIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * An update replaces the yt-dlp files in place, so it must never overlap a yt-dlp run: runs hold
+     * the read side, the update the write side. A waiting update also holds back new runs (the lock
+     * does not let readers barge past a queued writer), so the queue just waits for it. Only wraps
+     * the blocking client calls, which acquire and release on one thread.
+     */
+    private val engineFiles = ReentrantReadWriteLock()
 
     /** Unique per-call analyze ids: the library rejects a second live call with the same process id. */
     private val analyzeSeq = AtomicLong()
@@ -85,7 +96,7 @@ class YtDlpEngineImpl(
         }
         try {
             val res = try {
-                client.execute(id, url, opts) { _, _, _ -> }
+                engineFiles.read { client.execute(id, url, opts) { _, _, _ -> } }
             } catch (e: Exception) {
                 if (timedOut.get()) throw AnalyzeException(ANALYZE_TIMEOUT_MESSAGE, e)
                 throw e
@@ -168,14 +179,18 @@ class YtDlpEngineImpl(
                 var stderr = ""
                 var thrown: Exception? = null
                 try {
-                    val result = client.execute(id, target, runArgs) { _, _, line ->
-                        for (ln in line.split("\n")) {
-                            if (ln.isBlank()) continue
-                            val progress = ProgressParser.parseProgress(ln)
-                            if (progress != null) {
-                                trySend(EngineEvent.Progress(progress))
-                            } else {
-                                trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+                    val result = engineFiles.read {
+                        // Cancelled while waiting for an update to finish: never start it.
+                        if (cancelledIds.contains(id)) throw IllegalStateException("cancelled before start")
+                        client.execute(id, target, runArgs) { _, _, line ->
+                            for (ln in line.split("\n")) {
+                                if (ln.isBlank()) continue
+                                val progress = ProgressParser.parseProgress(ln)
+                                if (progress != null) {
+                                    trySend(EngineEvent.Progress(progress))
+                                } else {
+                                    trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+                                }
                             }
                         }
                     }
@@ -259,7 +274,7 @@ class YtDlpEngineImpl(
     }
 
     override suspend fun doUpdate(channel: UpdateChannel): UpdateResult = withContext(io) {
-        runCatching { client.update(channel == UpdateChannel.NIGHTLY) }
+        runCatching { engineFiles.write { client.update(channel == UpdateChannel.NIGHTLY) } }
             .fold(
                 onSuccess = { UpdateResult(true, it) },
                 onFailure = { UpdateResult(false, it.message ?: "update failed") },
