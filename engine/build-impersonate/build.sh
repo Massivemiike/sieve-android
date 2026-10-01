@@ -14,6 +14,10 @@
 # another minor version, so a host whose python3 is 3.13/3.14 must install python3.12 (+ python3.12-venv)
 # or point PYBUILD at one: PYBUILD=/path/to/python3.12 bash build.sh
 #
+# VERSION is the install marker the app compares at startup. It is the pinned component versions plus
+# the SHA-256 of the zip, so rebuilding with the same pins but different output (link flags, a shim
+# patch) still reinstalls on devices that already have the previous bundle.
+#
 # Versions are pinned to what yt-dlp accepts (curl_cffi 0.10-0.16 as of 2026.08.19) and to the
 # Python inside youtubedl-android 0.18.1. Bump PYV / the AAR together when that library moves Python.
 set -euo pipefail
@@ -153,7 +157,6 @@ for f in "$SITE/_cffi_backend.cpython-312.so" "$SITE/curl_cffi/_wrapper.abi3.so"
 done
 
 echo "=== package"
-VERSION="curl_cffi-$CCFFIV cffi-$CFFIV libcurl-impersonate-$CURLV certifi-$CERTV cp312-arm64-v8a"
 # Sorted entries + fixed timestamps: the same inputs give a byte-identical zip.
 python3 - "$SITE" "$ASSETS/sieve-impersonate.zip" <<'PY'
 import os, sys, zipfile
@@ -167,6 +170,10 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         with open(os.path.join(root, p), "rb") as f:
             z.writestr(info, f.read())
 PY
+# The marker: pinned versions + the zip's own hash (the zip is byte-reproducible, so the hash only changes
+# when its content does). Computed AFTER the zip exists.
+ZIPSHA=$(sha256sum "$ASSETS/sieve-impersonate.zip" | cut -c1-12)
+VERSION="curl_cffi-$CCFFIV cffi-$CFFIV libcurl-impersonate-$CURLV certifi-$CERTV cp312-arm64-v8a sha256-$ZIPSHA"
 printf '%s\n' "$VERSION" > "$ASSETS/VERSION"
 
 {
