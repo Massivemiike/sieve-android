@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.room.Room
 import kotlinx.coroutines.withContext
+import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
 import com.sieve.data.db.SieveDatabase
 import com.sieve.engine.EngineInit
@@ -16,6 +17,7 @@ import com.sieve.engine.repo.YoutubeDLClientImpl
 import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.engine.repo.YtDlpEngineImpl
 import com.sieve.engine.update.GithubReleaseApiImpl
+import com.sieve.queue.core.QueueState
 import com.sieve.queue.core.awaitNoActiveDownload
 import com.sieve.queue.service.JobDriver
 import com.sieve.queue.service.QueueManager
@@ -33,7 +35,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import java.io.File
 
 /**
@@ -88,10 +92,15 @@ object AppGraph {
 
         val dlPort = RealDownloadPort(engine)
         val txPort = RealTranscodePort(ffmpegBinaryPath)
+        // Start from the persisted caps (not the 3/1 defaults) so a restart-time drain already obeys them,
+        // then follow later changes so the Settings steppers apply without an app restart.
+        val initialPrefs = runCatching { runBlocking { appSettings.flow.first() } }.getOrDefault(AppPrefs())
         val manager = QueueManager(
             JobDriver(dlPort, txPort), dlPort, txPort, persistence, output, SystemClock(),
+            initial = QueueState(maxDownloads = initialPrefs.maxDownloads, maxTranscodes = initialPrefs.maxTranscodes),
         )
         queue = QueueRepository.create(app, manager, appScope)
+        queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })
         autoUpdateYtDlp(ioScope)
         initialized = true
     }

@@ -21,6 +21,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,6 +87,22 @@ class QueueManager(
     }
     suspend fun retry(id: String) { dispatch(QueueEvent.Retry(id)); drain() }
     suspend fun setGlobalPaused(paused: Boolean) { dispatch(QueueEvent.SetGlobalPaused(paused)); if (!paused) drain() }
+
+    /**
+     * Applies new concurrency caps (clamped by the reducer) and re-drains so a raised cap admits
+     * waiting jobs at once. Lowering never kills a running job — it just stops new admissions until
+     * the running count drops under the cap.
+     */
+    suspend fun setLimits(downloads: Int, transcodes: Int) {
+        dispatch(QueueEvent.SetMaxDownloads(downloads))
+        dispatch(QueueEvent.SetMaxTranscodes(transcodes))
+        drain()
+    }
+
+    /** Keeps the caps in sync with a live (downloads, transcodes) source such as the persisted settings. */
+    suspend fun followLimits(limits: Flow<Pair<Int, Int>>) {
+        limits.distinctUntilChanged().collect { (downloads, transcodes) -> setLimits(downloads, transcodes) }
+    }
 
     suspend fun rehydrate() {
         val loaded = persistence.loadAll()

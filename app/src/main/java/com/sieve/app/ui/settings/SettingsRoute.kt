@@ -47,6 +47,7 @@ import com.sieve.app.ui.download.DownloadPresets
 import com.sieve.app.ui.theme.AccentSwatches
 import com.sieve.app.ui.theme.ThemeMode
 import com.sieve.app.ui.theme.accentFromHex
+import com.sieve.queue.core.QueueLimits
 
 @Composable
 fun SettingsRoute(
@@ -117,14 +118,14 @@ fun SettingsScreen(
             item { SectionLabel("Downloads") }
             item {
                 Group {
-                    RowStepper("Max downloads", state.app.maxDownloads, 1, 10, onMaxDownloads, "maxdl")
+                    RowStepper("Max downloads", state.app.maxDownloads, QueueLimits.DOWNLOADS.first, QueueLimits.DOWNLOADS.last, onMaxDownloads, "maxdl")
                     Divider()
                     RowItem("Default format", DownloadPresets.byId(state.app.defaultPresetId).label)
                 }
             }
 
             item { SectionLabel("Transcode") }
-            item { Group { RowStepper("Max transcodes", state.app.maxTranscodes, 1, 4, onMaxTranscodes, "maxtx") } }
+            item { Group { RowStepper("Max transcodes", state.app.maxTranscodes, QueueLimits.TRANSCODES.first, QueueLimits.TRANSCODES.last, onMaxTranscodes, "maxtx") } }
 
             item { SectionLabel("Engine") }
             item {

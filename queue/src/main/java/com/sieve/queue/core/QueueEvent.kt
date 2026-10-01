@@ -10,6 +10,7 @@ sealed interface QueueEvent {
     data class Remove(val id: String) : QueueEvent
     data class SetGlobalPaused(val paused: Boolean) : QueueEvent
     data class SetMaxDownloads(val n: Int) : QueueEvent
+    data class SetMaxTranscodes(val n: Int) : QueueEvent
     data class Reorder(val id: String, val beforeId: String?) : QueueEvent
     data class SetPinned(val id: String, val pinned: Boolean) : QueueEvent
 

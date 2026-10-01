@@ -10,9 +10,13 @@ import com.sieve.queue.core.QueuePersistence
 import com.sieve.queue.core.QueueState
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -72,6 +76,61 @@ class QueueManagerTest {
         assertEquals(2, s.jobs.count { it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.PREPARING })
         assertEquals(1, s.jobs.count { it.status == DownloadStatus.QUEUED })
         gate.complete(Unit)
+    }
+
+    private fun active(m: QueueManager) =
+        m.state.value.jobs.count { it.status == DownloadStatus.RUNNING || it.status == DownloadStatus.PREPARING }
+
+    // advanceUntilIdle() skips backgroundScope work (the manager runs there); runCurrent() drains it.
+    @Test fun `followLimits raising the cap admits waiting downloads without a restart`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val port = FakeDownloadPort { flow { emit(EngineEvent.Progress(DownloadProgress(0.1f))); gate.await(); emit(EngineEvent.Completed(0)) } }
+        val (m, _) = manager(port, maxDownloads = 1)
+        val limits = MutableStateFlow(1 to 1)
+        m.start(backgroundScope)
+        backgroundScope.launch { m.followLimits(limits) }
+        m.enqueue(dl("a")); m.enqueue(dl("b")); m.enqueue(dl("c"))
+        runCurrent()
+        assertEquals(1, active(m))
+        assertEquals(2, m.state.value.jobs.count { it.status == DownloadStatus.QUEUED })
+
+        limits.value = 3 to 1
+        runCurrent()
+        assertEquals(3, active(m))
+        assertEquals(0, m.state.value.jobs.count { it.status == DownloadStatus.QUEUED })
+        gate.complete(Unit)
+    }
+
+    @Test fun `followLimits lowering the cap keeps running jobs and holds back new ones`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val port = FakeDownloadPort { flow { emit(EngineEvent.Progress(DownloadProgress(0.1f))); gate.await(); emit(EngineEvent.Completed(0)) } }
+        val (m, _) = manager(port, maxDownloads = 3)
+        val limits = MutableStateFlow(3 to 1)
+        m.start(backgroundScope)
+        backgroundScope.launch { m.followLimits(limits) }
+        m.enqueue(dl("a")); m.enqueue(dl("b")); m.enqueue(dl("c"))
+        runCurrent()
+        assertEquals(3, active(m))
+
+        limits.value = 1 to 1
+        m.enqueue(dl("d"))
+        runCurrent()
+        assertEquals(3, active(m))                                           // none killed
+        assertEquals(DownloadStatus.QUEUED, m.state.value.job("d")!!.status) // d waits for a free slot
+
+        gate.complete(Unit)
+        m.state.first { it.job("d")?.status == DownloadStatus.COMPLETED }
+        assertTrue(m.state.value.jobs.all { it.status == DownloadStatus.COMPLETED })
+    }
+
+    @Test fun `followLimits clamps out-of-range values and applies the transcode cap`() = runTest {
+        val (m, _) = manager(FakeDownloadPort(), maxDownloads = 2)
+        m.followLimits(flowOf(0 to 99))
+        assertEquals(1, m.state.value.maxDownloads)
+        assertEquals(4, m.state.value.maxTranscodes)
+        m.followLimits(flowOf(50 to 2))
+        assertEquals(10, m.state.value.maxDownloads)
+        assertEquals(2, m.state.value.maxTranscodes)
     }
 
     @Test fun `pause stamps reason before cancel and lands PAUSED`() = runTest {

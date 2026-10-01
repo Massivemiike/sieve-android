@@ -164,6 +164,18 @@ class QueueReducerTest {
         assertEquals(listOf("b"), s.jobs.map { it.id })
     }
 
+    @Test fun `max downloads is applied and clamped into the stepper range`() {
+        assertEquals(5, r(QueueState(), QueueEvent.SetMaxDownloads(5)).maxDownloads)
+        assertEquals(1, r(QueueState(), QueueEvent.SetMaxDownloads(0)).maxDownloads)
+        assertEquals(10, r(QueueState(), QueueEvent.SetMaxDownloads(99)).maxDownloads)
+    }
+
+    @Test fun `max transcodes is applied and clamped into the stepper range`() {
+        assertEquals(2, r(QueueState(), QueueEvent.SetMaxTranscodes(2)).maxTranscodes)
+        assertEquals(1, r(QueueState(), QueueEvent.SetMaxTranscodes(-3)).maxTranscodes)
+        assertEquals(4, r(QueueState(), QueueEvent.SetMaxTranscodes(99)).maxTranscodes)
+    }
+
     @Test fun `rehydrate reverts in-flight to QUEUED, leaves terminal alone`() {
         val s = r(
             QueueState(
