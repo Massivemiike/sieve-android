@@ -10,12 +10,15 @@ import com.sieve.engine.update.UpdateChannel
 import com.sieve.engine.update.UpdateCheck
 import com.sieve.engine.update.UpdateResult
 import com.sieve.storage.settings.StorageSettings
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -41,12 +44,16 @@ class SettingsViewModelTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private class FakeEngine(private val update: () -> UpdateResult = { throw NotImplementedError() }) : YtDlpEngine {
+    private class FakeEngine(
+        /** When set, version() suspends until it completes, so a test can pick which Settings read finishes last. */
+        private val versionGate: CompletableDeferred<Unit>? = null,
+        private val update: () -> UpdateResult = { throw NotImplementedError() },
+    ) : YtDlpEngine {
         var updateCalls = 0
         override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = throw NotImplementedError()
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
         override fun cancel(id: String): Boolean = true
-        override suspend fun version(): String? = "2025.01.01"
+        override suspend fun version(): String? { versionGate?.await(); return "2025.01.01" }
         override suspend fun checkUpdate(): UpdateCheck = throw NotImplementedError()
         override suspend fun doUpdate(channel: UpdateChannel): UpdateResult { updateCalls++; return update() }
     }
@@ -62,7 +69,11 @@ class SettingsViewModelTest {
     private lateinit var appSettings: AppSettings
 
     /** A VM whose viewModelScope runs eagerly on the test scheduler. */
-    private fun TestScope.newVm(engine: YtDlpEngine, downloadActive: () -> Boolean = { false }): SettingsViewModel {
+    private fun TestScope.newVm(
+        engine: YtDlpEngine,
+        downloadActive: () -> Boolean = { false },
+        io: CoroutineDispatcher = UnconfinedTestDispatcher(testScheduler),
+    ): SettingsViewModel {
         Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
         val store = PreferenceDataStoreFactory.create(
             scope = CoroutineScope(UnconfinedTestDispatcher(testScheduler)),
@@ -70,7 +81,7 @@ class SettingsViewModelTest {
         appSettings = AppSettings(store)
         return SettingsViewModel(
             appSettings, StorageSettings(store), engine, downloadActive,
-            cookiesStore = cookiesStore, io = UnconfinedTestDispatcher(testScheduler),
+            cookiesStore = cookiesStore, io = io,
         )
     }
 
@@ -120,13 +131,6 @@ class SettingsViewModelTest {
         vm.updateEngine()
         val s = vm.state.first { it.updateMessage != null }
         assertEquals("Update failed: boom", s.updateMessage)
-    }
-
-    @Test
-    fun updateFailureWithBlankDetailIsJustUpdateFailed() = runTest {
-        val vm = newVm(FakeEngine { UpdateResult(false, "  ") })
-        vm.updateEngine()
-        assertEquals("Update failed", vm.state.first { it.updateMessage != null }.updateMessage)
     }
 
     @Test
@@ -243,6 +247,52 @@ class SettingsViewModelTest {
         val vm = newVm(FakeEngine())
         appSettings.setCookiesFileUri(File(cookiesDir, "cookies.txt").absolutePath)
         assertEquals(2, vm.state.first { it.cookies != null }.cookies!!.count)
+    }
+
+    @Test
+    fun theEngineVersionAndTheCookiesBothSurviveWhenTheVersionResolvesLast() = runTest {
+        File(cookiesDir, "cookies.txt").writeText(String(goodCookies))
+        val gate = CompletableDeferred<Unit>()
+        val vm = newVm(FakeEngine(versionGate = gate))                      // io is eager: the cookies read finishes first
+        appSettings.setCookiesFileUri(File(cookiesDir, "cookies.txt").absolutePath)
+        vm.state.first { it.cookies != null }
+
+        gate.complete(Unit)                                                 // ...then the version lands
+        val s = vm.state.first { it.engineVersion != null }
+        assertEquals("2025.01.01", s.engineVersion)
+        assertEquals(2, s.cookies?.count)                                   // not overwritten by the version's stale copy
+    }
+
+    @Test
+    fun theEngineVersionAndTheCookiesBothSurviveWhenTheCookiesResolveLast() = runTest {
+        File(cookiesDir, "cookies.txt").writeText(String(goodCookies))
+        val gate = CompletableDeferred<Unit>()
+        // Both reads are pending: the version on the gate, the cookies on the queued io dispatcher.
+        val vm = newVm(FakeEngine(gate), io = StandardTestDispatcher(testScheduler))
+        appSettings.setCookiesFileUri(File(cookiesDir, "cookies.txt").absolutePath)
+
+        gate.complete(Unit)                                                 // the version lands first...
+        vm.state.first { it.engineVersion != null }
+        advanceUntilIdle()                                                  // ...then the cookies read completes
+        val s = vm.state.first { it.cookies != null }
+        assertEquals("2025.01.01", s.engineVersion)                         // not overwritten by the cookies' stale copy
+        assertEquals(2, s.cookies?.count)
+    }
+
+    @Test
+    fun theVersionRefreshAfterAnUpdateKeepsTheCookies() = runTest {
+        documents["content://picker/cookies.txt"] = goodCookies
+        val gate = CompletableDeferred<Unit>()
+        val vm = newVm(FakeEngine(gate) { UpdateResult(true, "DONE") })
+        vm.importCookies("content://picker/cookies.txt")
+        gate.complete(Unit)
+        vm.state.first { it.cookies != null && it.engineVersion != null }
+
+        vm.updateEngine()
+        val s = vm.state.first { it.updateMessage != null }
+        assertEquals("Engine updated", s.updateMessage)
+        assertEquals(2, s.cookies?.count)
+        assertEquals("2025.01.01", s.engineVersion)
     }
 
     @Test

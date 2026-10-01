@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -53,8 +54,10 @@ class SettingsViewModel(
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     init {
-        launch { extra.value = extra.value.copy(engineVersion = engine.version()) }
-        launch { extra.value = extra.value.copy(cookies = withContext(io) { cookiesStore.info() }) }
+        // Each launch computes its value FIRST and then merges it atomically: `extra.value = extra.value.copy(x = suspendingCall())`
+        // reads the receiver before it suspends, so whichever read finished last would overwrite the other's field.
+        launch { val v = engine.version(); extra.update { it.copy(engineVersion = v) } }
+        launch { val c = withContext(io) { cookiesStore.info() }; extra.update { it.copy(cookies = c) } }
     }
 
     fun setThemeMode(m: ThemeMode) = launch { appSettings.setThemeMode(m) }
@@ -108,7 +111,8 @@ class SettingsViewModel(
             onSuccess = { if (it.ok) "Engine updated" else failureMessage(it.output) },
             onFailure = { failureMessage(it.message) },
         )
-        extra.value = extra.value.copy(updating = false, updateMessage = msg, engineVersion = engine.version())
+        val v = engine.version()
+        extra.update { it.copy(updating = false, updateMessage = msg, engineVersion = v) }
     }
 
     private fun failureMessage(detail: String?): String =
