@@ -17,7 +17,7 @@ class YtdlpArgsTest {
     private val s = EngineSettings()
 
     @Test fun t1Baseline() = assertEquals(
-        listOf("-f", "bestvideo*+bestaudio/best", "-o", "%(title)s [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp"),
+        listOf("-f", "bestvideo*+bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp"),
         YtdlpArgs.build(DownloadArgsOptions(format = "bestvideo*+bestaudio/best"), s),
     )
 

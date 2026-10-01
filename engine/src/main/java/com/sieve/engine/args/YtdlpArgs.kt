@@ -8,7 +8,10 @@ package com.sieve.engine.args
  * never added (the library bundles ffmpeg).
  */
 object YtdlpArgs {
-    const val DEFAULT_TEMPLATE = "%(title)s [%(id)s].%(ext)s"
+    // Title clamped to 150 BYTES: Android's ext4 caps a filename at 255 bytes, and yt-dlp appends
+    // ".f<format-id>.<ext>.part" while downloading separate streams. Facebook titles are the whole
+    // post caption (emoji included), which overflowed it → "[Errno 36] File name too long".
+    const val DEFAULT_TEMPLATE = "%(title).150B [%(id)s].%(ext)s"
     const val DEFAULT_OUTPUT_PATH = "~/Videos/yt-dlp"
 
     /** `"-x / --extract-audio"` → `"--extract-audio"`; no slash → unchanged. */

@@ -83,7 +83,7 @@ class DownloadViewModelTest {
         assertTrue(spec.engineArgs.contains("-f"))
         assertTrue(spec.engineArgs.contains("bestvideo+bestaudio/best"))
         assertTrue(spec.engineArgs.contains("--embed-subs")) // archive extra args threaded
-        assertEquals("%(title)s [%(id)s].%(ext)s", job.output.outputTemplate)
+        assertEquals("%(title).150B [%(id)s].%(ext)s", job.output.outputTemplate)
         assertEquals("My Vid", job.title)
         assertEquals("http://t", job.thumbnailUrl)
         assertEquals("youtube", job.site)

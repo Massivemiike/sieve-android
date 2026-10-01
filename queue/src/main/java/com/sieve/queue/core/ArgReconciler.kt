@@ -41,8 +41,15 @@ object ArgReconciler {
         a = stripFlagValue(a, "--paths")
         a = stripFlagValue(a, "-o")
         a = stripFlagValue(a, "--output")
-        return a + listOf("-P", prepared.workDir, "-o", prepared.workFileTemplate)
+        return a + listOf("-P", prepared.workDir, "-o", byteSafeTemplate(prepared.workFileTemplate))
     }
+
+    /**
+     * Clamp an unbounded `%(title)s` to 150 bytes at spawn time, so jobs persisted with the old
+     * template (e.g. a failed Facebook download being retried) can't overflow ext4's 255-byte
+     * filename limit either.
+     */
+    fun byteSafeTemplate(template: String): String = template.replace("%(title)s", "%(title).150B")
 
     /** Invariant flags the desktop main process prepends. Progress-template omitted: the engine
      *  module owns its own progress parsing. url is appended by the port at call time. */

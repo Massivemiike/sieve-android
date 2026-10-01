@@ -43,7 +43,13 @@ class ArgReconcilerTest {
             listOf("-f", "best", "-P", "/old", "-o", "x.%(ext)s"),
             PreparedOutput(workDir = "/work/job-a", workFileTemplate = "%(title)s [%(id)s].%(ext)s"),
         )
-        assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(title)s [%(id)s].%(ext)s"), out)
+        assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(title).150B [%(id)s].%(ext)s"), out)
+    }
+
+    @Test fun `byteSafeTemplate clamps an unbounded title and leaves others alone`() {
+        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
+        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+        assertEquals("%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(id)s.%(ext)s"))
     }
 
     @Test fun `buildSpawnArgs prepends invariant flags and injects output`() {
