@@ -3,14 +3,20 @@ package com.sieve.queue.service
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.ContentProvider
+import android.content.ContentValues
 import android.content.Intent
+import android.database.Cursor
+import android.net.Uri
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
@@ -19,6 +25,19 @@ import org.robolectric.Shadows.shadowOf
 class OutputIntentsTest {
     private val ctx: Context get() = RuntimeEnvironment.getApplication()
     private val uri = "content://media/external/downloads/7"
+
+    // Robolectric 4.14+ answers the "media" authority with FakeMediaProvider, which throws for a row it never stored
+    // (Intent.resolveType runs inside startActivity). The test only cares that the viewer is started, so a stub replaces it.
+    class StubMediaProvider : ContentProvider() {
+        override fun onCreate() = true
+        override fun getType(uri: Uri): String = "video/mp4"
+        override fun query(uri: Uri, p: Array<out String>?, s: String?, a: Array<out String>?, o: String?): Cursor? = null
+        override fun insert(uri: Uri, values: ContentValues?): Uri? = null
+        override fun delete(uri: Uri, s: String?, a: Array<out String>?) = 0
+        override fun update(uri: Uri, values: ContentValues?, s: String?, a: Array<out String>?) = 0
+    }
+
+    @Before fun stubMediaProvider() { Robolectric.buildContentProvider(StubMediaProvider::class.java).create("media") }
 
     @Test fun `only a content Uri is openable`() {
         assertEquals(uri, OutputIntents.openableUri(uri).toString())

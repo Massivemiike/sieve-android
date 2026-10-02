@@ -121,9 +121,9 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 
 ## 🧰 Tech stack
 
-- **Language / toolchain:** Kotlin **2.0.21**, AGP 8.7.3, JVM 17. `minSdk 26` (Android 8.0), `targetSdk 35`, `compileSdk 35`.
+- **Language / toolchain:** Kotlin **2.4.20**, AGP 9.4.1, Gradle 9.8.0, JVM 17. `minSdk 26` (Android 8.0), `targetSdk 35`, `compileSdk 35`.
 - **UI:** Jetpack Compose (BOM 2024.09.03) + Material 3, Navigation Compose, Lifecycle ViewModel / Runtime Compose, Coil (thumbnails).
-- **Persistence:** Room 2.6.1 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
+- **Persistence:** Room 2.8.5 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).
 - **yt-dlp engine:** `io.github.junkfood02.youtubedl-android:library:0.18.1` (GPL-3.0).
 - **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; encoders: libx264, libx265, SVT-AV1 4.2.0 (`libsvtav1`), libvpx 1.17.0 (`libvpx-vp9`), Opus 1.6.1 (`libopus`), LAME 3.100 (`libmp3lame`), libwebp 1.6.0 (`libwebp` / `libwebp_anim`) + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`; the codec license notices are regenerated from its pinned sources by `transcode/build-ffmpeg/codec-licenses.sh`.

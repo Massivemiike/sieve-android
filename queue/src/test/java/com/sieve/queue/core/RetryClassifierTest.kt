@@ -19,7 +19,7 @@ class RetryClassifierTest(private val msg: String, private val expected: RetryCl
     companion object {
         @JvmStatic
         @Parameterized.Parameters(name = "{0} -> {1}")
-        fun data() = listOf(
+        fun data(): List<Array<Any>> = listOf(
             arrayOf("HTTP Error 429: Too Many Requests", RetryClass.TRANSIENT),
             arrayOf("Unable to download webpage: throttled", RetryClass.TRANSIENT),
             arrayOf("[Errno 104] Network is unreachable", RetryClass.TRANSIENT),
