@@ -48,6 +48,14 @@ class QueueNotificationTest {
         assertEquals(listOf(NotifAction.RESUME, NotifAction.CANCEL), model.actions)
     }
 
+    @Test fun `the count ignores finished rows restored from earlier sessions`() {
+        val history = (1..50).map { dl("old$it", if (it % 2 == 0) DownloadStatus.COMPLETED else DownloadStatus.FAILED) }
+        val model = QueueNotification.render(
+            QueueState(jobs = history + dl("a", DownloadStatus.RUNNING, 0.1f, "Cats") + dl("b", DownloadStatus.QUEUED)),
+        )
+        assertEquals("Downloading 1 of 2", model.title)
+    }
+
     @Test fun `indeterminate when active job has null fraction`() {
         val model = QueueNotification.render(QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING, null))))
         assertTrue(model.indeterminate)

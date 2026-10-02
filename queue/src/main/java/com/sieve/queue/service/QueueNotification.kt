@@ -61,9 +61,11 @@ object QueueNotification {
             active != null -> {
                 val frac = active.progress.fraction
                 val pct = ((frac ?: 0f) * 100).toInt()
-                val runningIdx = 1 + state.jobs.indexOfFirst { it.id == active.id }.coerceAtLeast(0)
+                // Count live rows only: the restored queue keeps finished rows until the user clears them.
+                val live = state.jobs.filterNot { it.status.isTerminal }
+                val runningIdx = 1 + live.indexOfFirst { it.id == active.id }.coerceAtLeast(0)
                 NotifModel(
-                    title = "Downloading $runningIdx of ${sum.total}",
+                    title = "Downloading $runningIdx of ${live.size}",
                     text = "${active.title.ifBlank { "Item" }} · $pct%",
                     progress = pct, indeterminate = frac == null,
                     actions = listOf(NotifAction.PAUSE, NotifAction.CANCEL), actionTargetId = active.id,
