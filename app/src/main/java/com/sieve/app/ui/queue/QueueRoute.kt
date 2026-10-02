@@ -75,6 +75,8 @@ fun QueueRoute(
         state, vm::pause, vm::resume, vm::retry, vm::cancel,
         onRemove = vm::remove,
         onClearFinished = vm::clearFinished,
+        onResumeAllRestored = vm::resumeAllHeld,
+        onDismissRestored = vm::dismissRestore,
         onOpen = { job ->
             if (!OutputIntents.open(ctx, job.filePath)) scope.launch { snackbar.showSnackbar("Can't open this file") }
         },
@@ -91,11 +93,18 @@ fun QueueScreen(
     onCancel: (String) -> Unit,
     onRemove: (String) -> Unit = {},
     onClearFinished: () -> Unit = {},
+    onResumeAllRestored: () -> Unit = {},
+    onDismissRestored: () -> Unit = {},
     onOpen: (QueueJob) -> Unit = {},
     snackbarHost: SnackbarHostState = remember { SnackbarHostState() },
 ) {
     Scaffold(
-        topBar = { QueueTopBar(state, onClearFinished) },
+        topBar = {
+            Column {
+                QueueTopBar(state, onClearFinished)
+                if (state.showRestoreBanner) RestoredBanner(state.restoredHeld, onResumeAllRestored, onDismissRestored)
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding ->
         if (state.jobs.isEmpty()) {
@@ -146,6 +155,28 @@ private fun QueueTopBar(state: QueueUiState, onClearFinished: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * Shown once after an upgrade from v1.0.3 or older: the unfinished downloads that older builds saved but never
+ * restored are back, paused, so none of them starts by itself. "Dismiss" only hides this; the rows stay paused.
+ */
+@Composable
+private fun RestoredBanner(count: Int, onResumeAll: () -> Unit, onDismiss: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp).clip(RoundedCornerShape(13.dp)).background(cs.surface)
+            .border(1.dp, cs.outline, RoundedCornerShape(13.dp)).testTag("restore_banner")
+            .padding(start = 12.dp, top = 10.dp, end = 4.dp, bottom = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(RestoredCopy.title(count), style = MaterialTheme.typography.titleSmall)
+        Text(RestoredCopy.EXPLANATION, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag("restore_dismiss")) { Text("Dismiss") }
+            TextButton(onClick = onResumeAll, modifier = Modifier.testTag("restore_resume_all")) { Text("Resume all") }
+        }
     }
 }
 

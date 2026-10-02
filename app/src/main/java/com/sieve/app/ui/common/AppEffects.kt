@@ -13,14 +13,17 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.sieve.app.di.AppGraph
+import com.sieve.app.ui.nav.Dest
+import com.sieve.app.ui.nav.NavRequests
+import com.sieve.app.ui.queue.showRestoredSnackbar
 import com.sieve.queue.service.JobToast
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Requests POST_NOTIFICATIONS on first launch (API 33+) and surfaces a snackbar when a queue job
- * reaches a terminal state. The persistent progress notification itself is owned by :queue's
- * foreground QueueService.
+ * Requests POST_NOTIFICATIONS on first launch (API 33+), surfaces a snackbar when a queue job
+ * reaches a terminal state, and tells the user once when the queue came back paused after an upgrade.
+ * The persistent progress notification itself is owned by :queue's foreground QueueService.
  */
 @Composable
 fun rememberAppSnackbarHost(): SnackbarHostState {
@@ -43,6 +46,11 @@ fun rememberAppSnackbarHost(): SnackbarHostState {
             // The queue is restored from the last session: rows already finished then are history, not news.
             AppGraph.queue.rehydrated.first { it }
             AppGraph.queue.state.value.jobs.filter { it.status.isTerminal }.mapTo(seen) { it.id }
+            // The one-time "restored paused" migration says so once (the Queue banner stays until the user acts).
+            // Own coroutine: the snackbar suspends until it is gone, and the completions below must not wait for it.
+            AppGraph.queue.consumeRestoreNotice().takeIf { it > 0 }?.let { n ->
+                scope.launch { showRestoredSnackbar(host, n) { NavRequests.open(Dest.QUEUE.route) } }
+            }
             AppGraph.queue.state.collect { st ->
                 st.jobs.forEach { j ->
                     // Same wording as the system notification and the desktop toasts (kind-aware, names the item).
