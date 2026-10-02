@@ -72,7 +72,7 @@ android {
 // --- sdk37 ---
 // SdkLevelsTest, NativeLibPackagingTest and ManifestPermissionsTest read repository files that are not classes on the test classpath:
 // every module's build script (compileSdk, targetSdk, buildToolsVersion, packaging), the workflows (the platform and build-tools they
-// install) and this module's manifest. Without these declarations Gradle's up-to-date check and the build cache
+// install), this module's manifest and BackupRulesTest's two backup rule files. Without these declarations Gradle's up-to-date check and the build cache
 // (org.gradle.caching=true, restored by CI) would call the tests UP-TO-DATE / FROM-CACHE in exactly the change that breaks them.
 tasks.withType<Test>().configureEach {
     inputs.files(
@@ -83,6 +83,8 @@ tasks.withType<Test>().configureEach {
         rootProject.layout.projectDirectory.file("storage/build.gradle.kts"),
         rootProject.layout.projectDirectory.file("transcode/build.gradle.kts"),
         layout.projectDirectory.file("src/main/AndroidManifest.xml"),
+        layout.projectDirectory.file("src/main/res/xml/backup_rules.xml"),
+        layout.projectDirectory.file("src/main/res/xml/data_extraction_rules.xml"),
     ).withPropertyName("guardTests.buildScriptsAndManifest").withPathSensitivity(PathSensitivity.RELATIVE)
     inputs.files(rootProject.fileTree(".github/workflows") { include("*.yml", "*.yaml") })
         .withPropertyName("guardTests.workflows").withPathSensitivity(PathSensitivity.RELATIVE)

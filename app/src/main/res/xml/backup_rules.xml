@@ -11,7 +11,13 @@
        - external updates/    the self-update APK (getExternalFilesDir(null)/updates, tens of MB). Not secret, but Auto
                               Backup includes the "external" domain by default and one file over the 25 MB quota
                               makes the whole app backup be skipped
-     (The Python runtime lives in noBackupFilesDir and is never backed up.) -->
+       - youtubedl-android.xml  the library's own prefs (shared_prefs/): its record of which yt-dlp it downloaded
+                              (dlpVersion), plus its Python and ffmpeg versions. The engine files themselves live in
+                              noBackupFilesDir and are never backed up, so a restored record names a yt-dlp that is not
+                              there: the bundled (older) one runs while every version check and the updater read "current"
+                              (Dailymotion "No video formats found!", Vimeo "HTTP Error 401"). Keep the record and the
+                              files together: both come back or neither does.
+     (The Python runtime, ffmpeg and yt-dlp live in noBackupFilesDir and are never backed up.) -->
 <full-backup-content>
     <exclude domain="file" path="cookies.txt" />
     <exclude domain="file" path="cookies.txt.tmp" />
@@ -24,4 +30,5 @@
     <exclude domain="database" path="sieve.db-shm" />
     <exclude domain="database" path="sieve.db-journal" />
     <exclude domain="external" path="updates" />
+    <exclude domain="sharedpref" path="youtubedl-android.xml" />
 </full-backup-content>

@@ -1,6 +1,7 @@
 package com.sieve.app
 
 import com.sieve.app.settings.CookiesStore
+import com.sieve.engine.repo.LibraryVersionRecord
 import org.junit.Test
 import org.w3c.dom.Element
 import java.io.File
@@ -12,6 +13,10 @@ import kotlin.test.assertTrue
  * cookies.txt, the proxy (which may carry "user:pass@") and queue rows (engine args with --proxy and
  * --cookies) must never reach a Google Drive backup or a device-to-device transfer. Both rule files
  * are needed: minSdk 26 reads fullBackupContent (up to API 30), API 31+ reads dataExtractionRules.
+ *
+ * youtubedl-android's own prefs file must stay out too, for a different reason: it records which yt-dlp the library
+ * downloaded, while the downloaded yt-dlp lives in noBackupFilesDir and is never restored. Restored alone, the record
+ * names a yt-dlp that is not there (the APK's older one runs, and every version check and the updater say "current").
  * Unit tests run with the module directory as the working directory.
  */
 class BackupRulesTest {
@@ -49,6 +54,9 @@ class BackupRulesTest {
         // The self-update APK (tens of MB) in getExternalFilesDir(null)/updates: Auto Backup includes the
         // "external" domain by default, and one over the 25 MB quota makes the whole backup be skipped.
         "external/updates",
+        // youtubedl-android's version record (dlpVersion...). The yt-dlp it describes is in noBackupFilesDir, so restoring the record
+        // without it makes the updater and Settings claim a yt-dlp that is not installed. The name is the library's, see below.
+        "sharedpref/${LibraryVersionRecord.PREFS_FILE}",
     )
 
     @Test fun theManifestPointsAtBothRuleFiles() {
@@ -70,6 +78,18 @@ class BackupRulesTest {
         for (name in listOf("cloud-backup", "device-transfer")) {
             val missing = required - excludes(section(root, name))
             assertTrue(missing.isEmpty(), "<$name> does not exclude $missing")
+        }
+    }
+
+    @Test fun theYoutubeDlRecordStaysOutOfEveryBackupPathAndTransfer() {
+        // Spelled out here on purpose: LibraryVersionRecord.PREFS_FILE is pinned to the library by LibraryRecordPinTest in :engine,
+        // and this fails if either the constant or the rules drift from the library's real file name.
+        assertEquals("youtubedl-android.xml", LibraryVersionRecord.PREFS_FILE)
+        val record = "sharedpref/youtubedl-android.xml"
+        assertTrue(record in excludes(parse("src/main/res/xml/backup_rules.xml")), "backup_rules.xml (Android 6-11) backs the record up")
+        val extraction = parse("src/main/res/xml/data_extraction_rules.xml")
+        for (name in listOf("cloud-backup", "device-transfer")) {
+            assertTrue(record in excludes(section(extraction, name)), "<$name> (Android 12+) carries the record")
         }
     }
 
