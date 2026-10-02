@@ -142,16 +142,43 @@ private fun LicenseCard(title: String, assetPath: String, tag: String) {
             Icon(Icons.Filled.ExpandMore, contentDescription = null, tint = cs.onSurfaceVariant)
         }
         if (expanded) {
-            val text by produceState(initialValue = "Loading…", assetPath) {
-                value = runCatching { context.assets.open(assetPath).bufferedReader().use { it.readText() } }
-                    .getOrDefault("(license text unavailable)")
+            val chunks by produceState(initialValue = listOf("Loading…"), assetPath) {
+                value = licenseChunks(
+                    runCatching { context.assets.open(assetPath).bufferedReader().use { it.readText() } }
+                        .getOrDefault("(license text unavailable)"),
+                )
             }
-            Text(
-                text,
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFamily),
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(12.dp),
-            )
+            Column(Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(12.dp)) {
+                val style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFamily)
+                for (chunk in chunks) Text(chunk, style = style, color = cs.onSurfaceVariant)
+            }
         }
     }
+}
+
+/** Longest piece [licenseChunks] makes: about 60 lines, ~15,000 px at 2x font scale on a 3x-density phone. */
+internal const val LICENSE_CHUNK_CHARS = 3_000
+
+/**
+ * Cuts [text] between lines into pieces of at most [maxChars] characters (a longer single line stays whole);
+ * joining them with "\n" gives [text] back. The card shows one Text per piece. A single Text holding a whole license
+ * is unbounded in height inside the scrolling card: the 80 KB COPYLEFT_TEXTS.txt is ~3,900 wrapped rows at 2x font
+ * scale, over 300,000 px on a 3x-density phone, past the 262,143 px (2^18 - 1) Compose can represent in a layout
+ * constraint. A Column of pieces has no such limit, because only each piece's own height is ever constrained.
+ */
+internal fun licenseChunks(text: String, maxChars: Int = LICENSE_CHUNK_CHARS): List<String> {
+    val chunks = ArrayList<String>()
+    var lines = ArrayList<String>()
+    var size = 0 // length of lines joined with "\n"
+    for (line in text.split('\n')) {
+        if (lines.isNotEmpty() && size + 1 + line.length > maxChars) {
+            chunks += lines.joinToString("\n")
+            lines = ArrayList()
+            size = 0
+        }
+        size += if (lines.isEmpty()) line.length else 1 + line.length
+        lines += line
+    }
+    chunks += lines.joinToString("\n")
+    return chunks
 }
