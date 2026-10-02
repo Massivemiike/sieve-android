@@ -56,6 +56,20 @@ class QueueNotificationTest {
         assertEquals("Downloading 1 of 2", model.title)
     }
 
+    @Test fun `paused rows are not counted as work in progress`() {
+        // Rows held paused after an upgrade (or paused by the user) are not going to run until resumed.
+        val model = QueueNotification.render(
+            QueueState(jobs = listOf(dl("h1", DownloadStatus.PAUSED), dl("h2", DownloadStatus.PAUSED), dl("a", DownloadStatus.RUNNING, 0.2f))),
+        )
+        assertEquals("Downloading 1 of 1", model.title)
+    }
+
+    @Test fun `a download being prepared wins over a paused row`() {
+        val model = QueueNotification.render(QueueState(jobs = listOf(dl("h", DownloadStatus.PAUSED), dl("new", DownloadStatus.PREPARING))))
+        assertEquals("Preparing…", model.title)
+        assertTrue(model.actions.isEmpty())
+    }
+
     @Test fun `indeterminate when active job has null fraction`() {
         val model = QueueNotification.render(QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING, null))))
         assertTrue(model.indeterminate)

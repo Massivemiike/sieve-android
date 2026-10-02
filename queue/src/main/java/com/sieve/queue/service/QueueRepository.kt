@@ -6,6 +6,7 @@ import androidx.core.content.ContextCompat
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.core.QueueState
+import com.sieve.queue.core.RestoreHold
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,9 @@ class QueueRepository private constructor(
     /** True once the persisted queue is in [state]; before that an empty queue just means "not loaded yet". */
     val rehydrated: StateFlow<Boolean> = manager.rehydrated
 
+    /** The rows the one-time restore brought back paused and that still wait for the user, and whether the banner was dismissed. */
+    val restore: StateFlow<RestoreHold> = manager.restoreHold
+
     fun enqueue(job: QueueJob) {
         ensureServiceRunning()
         scope.launch { manager.enqueue(job) }
@@ -38,6 +42,17 @@ class QueueRepository private constructor(
     fun remove(id: String) { scope.launch { manager.remove(id) } }
     fun clearFinished() { scope.launch { manager.clearFinished() } }
 
+    /** "Resume all" on the restored rows. */
+    fun resumeHeld() {
+        if (restore.value.heldIds.isEmpty()) return
+        ensureServiceRunning()
+        scope.launch { manager.resumeHeld() }
+    }
+    fun dismissRestoreBanner() { scope.launch { manager.dismissRestoreBanner() } }
+
+    /** How many rows this launch's one-time restore brought back paused, once (then 0). */
+    fun consumeRestoreNotice(): Int = manager.consumeRestoreNotice()
+
     /** Follows a live (downloads, transcodes) concurrency source for the life of the app scope. */
     fun followLimits(limits: Flow<Pair<Int, Int>>) { scope.launch { manager.followLimits(limits) } }
 
@@ -47,6 +62,7 @@ class QueueRepository private constructor(
      * Loads the persisted queue (once), then wakes the service when it brought back work to do — the
      * downloads a killed process left unfinished. That start can be refused when the process was spawned
      * in the background (Android 12+); the work then simply waits for the next enqueue or app open.
+     * The one-time first restore brings unfinished work back paused (see [QueueManager.rehydrate]), so it wakes nothing.
      */
     suspend fun rehydrate() {
         manager.rehydrate()

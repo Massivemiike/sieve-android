@@ -11,6 +11,7 @@ import androidx.room.Room
 import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
 import com.sieve.app.settings.CookiesStore
+import com.sieve.app.settings.DataStoreRestoreHoldStore
 import com.sieve.data.db.SieveDatabase
 import com.sieve.engine.EngineInit
 import com.sieve.engine.repo.YoutubeDLClientImpl
@@ -123,6 +124,8 @@ object AppGraph {
             onFailed = { QueueNotification.postDone(app, it) },
             // The picked file's cache copy goes once its job is done with it (completed / cancelled / row removed).
             releaseSource = { job -> (job.spec as? JobSpec.Transcode)?.let { sourceCopies.release(it.inputPath) } },
+            // The first restore after an upgrade from v1.0.3 or older comes back paused (once); this remembers it.
+            restoreStore = DataStoreRestoreHoldStore(prefs),
         )
         queue = QueueRepository.create(app, manager, appScope) // also restores the persisted queue, once
         queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })

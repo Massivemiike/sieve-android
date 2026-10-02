@@ -7,17 +7,23 @@ import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.core.QueueState
+import com.sieve.queue.core.RestoreHold
 import com.sieve.queue.core.UnifiedProgress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class QueueViewModelTest {
@@ -68,6 +74,66 @@ class QueueViewModelTest {
         vm.remove("a"); vm.remove("b"); vm.clearFinished()
         assertEquals(listOf("a", "b"), removed)
         assertEquals(1, cleared)
+    }
+
+    // --- the "Restored N unfinished items" banner ----------------------------------------------------------------
+
+    private fun restored(vararg held: String) = RestoreHold(migrated = true, heldIds = held.toSet())
+
+    @Test fun bannerCountsTheHeldRowsThatAreStillPaused() {
+        val state = QueueState(
+            jobs = listOf(
+                job("a", DownloadStatus.PAUSED, 0), job("b", DownloadStatus.PAUSED, 1),
+                job("moved", DownloadStatus.QUEUED, 2),   // was held, has been resumed since
+                job("mine", DownloadStatus.PAUSED, 3),    // paused by the user: not held
+            ),
+        )
+        val ui = QueueUiState.from(state, restored("a", "b", "moved", "gone"))
+        assertEquals(2, ui.restoredHeld)
+        assertTrue(ui.showRestoreBanner)
+    }
+
+    @Test fun bannerIsHiddenWhenNothingIsHeld() {
+        val state = QueueState(jobs = listOf(job("a", DownloadStatus.PAUSED, 0)))
+        assertEquals(0, QueueUiState.from(state, RestoreHold.SETTLED).restoredHeld)
+        assertFalse(QueueUiState.from(state, RestoreHold.SETTLED).showRestoreBanner)
+        assertFalse(QueueUiState.from(state).showRestoreBanner)   // the default: no hold at all
+    }
+
+    @Test fun bannerIsHiddenOnceDismissedButTheRowsStayListed() {
+        val state = QueueState(jobs = listOf(job("a", DownloadStatus.PAUSED, 0), job("b", DownloadStatus.PAUSED, 1)))
+        val ui = QueueUiState.from(state, restored("a", "b").copy(bannerDismissed = true))
+        assertFalse(ui.showRestoreBanner)
+        assertEquals(listOf("a", "b"), ui.jobs.map { it.id })
+    }
+
+    @Test fun bannerHidesWhenTheLastHeldRowIsResumed() = runTest {
+        val queue = MutableStateFlow(QueueState(jobs = listOf(job("a", DownloadStatus.PAUSED, 0), job("b", DownloadStatus.PAUSED, 1))))
+        val hold = MutableStateFlow(restored("a", "b"))
+        val vm = QueueViewModel(queue, restoreSource = hold)
+        backgroundScope.launch { vm.state.collect { } }
+        runCurrent()
+        assertEquals(2, vm.state.value.restoredHeld)
+
+        queue.value = queue.value.copy(jobs = queue.value.jobs.map { if (it.id == "a") it.copy(status = DownloadStatus.QUEUED) else it })
+        hold.value = restored("b")
+        runCurrent()
+        assertEquals(1, vm.state.value.restoredHeld)
+
+        queue.value = queue.value.copy(jobs = queue.value.jobs.map { it.copy(status = DownloadStatus.QUEUED) })
+        hold.value = restored()
+        runCurrent()
+        assertEquals(0, vm.state.value.restoredHeld)
+        assertFalse(vm.state.value.showRestoreBanner)
+    }
+
+    @Test fun bannerActionsDelegateToCallbacks() {
+        var resumedAll = 0
+        var dismissed = 0
+        val vm = QueueViewModel(MutableStateFlow(QueueState()), onResumeHeld = { resumedAll++ }, onDismissRestore = { dismissed++ })
+        vm.resumeAllHeld(); vm.dismissRestore(); vm.dismissRestore()
+        assertEquals(1, resumedAll)
+        assertEquals(2, dismissed)
     }
 
     @Test fun actionsDelegateToCallbacks() {
