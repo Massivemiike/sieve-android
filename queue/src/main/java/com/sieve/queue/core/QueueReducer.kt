@@ -35,10 +35,8 @@ object QueueReducer {
                 else -> it
             }
         }
-        is QueueEvent.Resume -> mapJob(state, event.id) {
-            if (it.status == DownloadStatus.PAUSED)
-                it.copy(status = DownloadStatus.QUEUED, nextEligibleAt = 0L, progress = it.progress.copy(speed = null, eta = null)) else it
-        }
+        is QueueEvent.Resume -> mapJob(state, event.id, ::resumed)
+        is QueueEvent.ResumeMany -> mapJobs(state, event.ids, ::resumed)
         is QueueEvent.Retry -> mapJob(state, event.id) {
             if (it.status == DownloadStatus.FAILED)
                 it.copy(
@@ -56,17 +54,33 @@ object QueueReducer {
         is QueueEvent.SetMaxTranscodes -> state.copy(maxTranscodes = event.n.coerceIn(QueueLimits.TRANSCODES))
         is QueueEvent.SetPinned -> mapJob(state, event.id) { it.copy(pinned = event.pinned) }
         is QueueEvent.Reorder -> reorder(state, event.id, event.beforeId)
-        QueueEvent.Rehydrate -> state.copy(
-            jobs = state.jobs.map {
-                if (it.status in NON_TERMINAL_INFLIGHT)
-                    it.copy(
-                        status = DownloadStatus.QUEUED, cancelReason = null, nextEligibleAt = 0L,
-                        progress = it.progress.copy(speed = null, eta = null),
-                    )
-                else it
-            },
-        )
+        QueueEvent.Rehydrate -> rehydrated(state, emptySet())
+        is QueueEvent.RehydrateHeld -> rehydrated(state, event.heldIds)
     }
+
+    private fun resumed(job: QueueJob): QueueJob =
+        if (job.status == DownloadStatus.PAUSED)
+            job.copy(status = DownloadStatus.QUEUED, nextEligibleAt = 0L, progress = job.progress.copy(speed = null, eta = null)) else job
+
+    /**
+     * A restart: finished rows stay as they were and work the dead process left in flight comes back QUEUED,
+     * except the unfinished rows in [held], which come back PAUSED (and so wait for the user, like a pause).
+     */
+    private fun rehydrated(state: QueueState, held: Set<String>) = state.copy(
+        jobs = state.jobs.map {
+            when {
+                it.id in held && !it.status.isTerminal -> it.copy(
+                    status = DownloadStatus.PAUSED, cancelReason = null, nextEligibleAt = 0L,
+                    progress = it.progress.copy(speed = null, eta = "paused", phase = Phase.PAUSED),
+                )
+                it.status in NON_TERMINAL_INFLIGHT -> it.copy(
+                    status = DownloadStatus.QUEUED, cancelReason = null, nextEligibleAt = 0L,
+                    progress = it.progress.copy(speed = null, eta = null),
+                )
+                else -> it
+            }
+        },
+    )
 
     private fun applySignal(state: QueueState, signal: JobSignal): QueueState {
         val job = state.job(signal.jobId) ?: return state

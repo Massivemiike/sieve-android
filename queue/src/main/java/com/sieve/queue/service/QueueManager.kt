@@ -4,6 +4,7 @@ import com.sieve.queue.core.ArgReconciler
 import com.sieve.queue.core.CancelReason
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.FailureInfo
+import com.sieve.queue.core.InMemoryRestoreHoldStore
 import com.sieve.queue.core.JobSignal
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.NextItemSelector
@@ -14,6 +15,8 @@ import com.sieve.queue.core.QueueJob
 import com.sieve.queue.core.QueuePersistence
 import com.sieve.queue.core.QueueReducer
 import com.sieve.queue.core.QueueState
+import com.sieve.queue.core.RestoreHold
+import com.sieve.queue.core.RestoreHoldStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -31,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Process-scoped orchestrator. Owns the [QueueState] + a [Mutex], persists every transition, runs
@@ -59,9 +63,24 @@ class QueueManager(
      * the same input. Best-effort; the host decides what (if anything) is deletable.
      */
     private val releaseSource: suspend (QueueJob) -> Unit = {},
+    /**
+     * Remembers the one-time "restore paused" migration across launches. The default lives in memory and starts
+     * out settled, so a manager without a persistent store restores exactly as it always did.
+     */
+    private val restoreStore: RestoreHoldStore = InMemoryRestoreHoldStore(),
 ) {
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<QueueState> = _state.asStateFlow()
+
+    private val _restoreHold = MutableStateFlow(RestoreHold())
+    /**
+     * The restored rows still waiting for the user (see [rehydrate]). A row leaves the set the moment it stops
+     * being PAUSED — resumed, cancelled, removed — from wherever that comes (its button, the notification, Resume
+     * all), because the set is trimmed against the state in [applyLocked]. Empty until the load has finished.
+     */
+    val restoreHold: StateFlow<RestoreHold> = _restoreHold.asStateFlow()
+
+    private val restoreNotice = AtomicInteger(0)
 
     private val _rehydrated = MutableStateFlow(false)
     /**
@@ -86,7 +105,13 @@ class QueueManager(
         val before = _state.value
         val after = QueueReducer.reduce(before, event)
         _state.value = after
+        val hold = _restoreHold.value
+        val trimmed = hold.stillHeldIn(after)
+        if (trimmed != hold) _restoreHold.value = trimmed
         withContext(NonCancellable) {
+            // The released ids reach the store BEFORE the rows change: dying in between leaves a resumed row held
+            // (it comes back paused, one tap to resume again), never a row the user left paused starting by itself.
+            if (trimmed != hold) saveHold(trimmed)
             val changed = after.jobs.filter { j -> before.job(j.id) != j }
             if (changed.isNotEmpty()) persistence.upsertAll(changed)
             (before.jobs.map { it.id } - after.jobs.map { it.id }.toSet()).forEach { persistence.delete(it) }
@@ -96,6 +121,33 @@ class QueueManager(
     suspend fun enqueue(job: QueueJob) { dispatch(QueueEvent.Enqueue(job)); drain() }
     suspend fun pause(id: String) { dispatch(QueueEvent.Pause(id)); killJob(id) }
     suspend fun resume(id: String) { dispatch(QueueEvent.Resume(id)); drain() }
+
+    /** Resumes every row still held from the restore, in one change; the hold (and with it the banner) clears. */
+    suspend fun resumeHeld() {
+        mutex.withLock {
+            val held = _restoreHold.value.heldIds
+            if (held.isNotEmpty()) applyLocked(QueueEvent.ResumeMany(held))
+        }
+        drain()
+    }
+
+    /** Hides the "Restored N unfinished items" banner for good. The rows stay paused and held until resumed one by one. */
+    suspend fun dismissRestoreBanner() {
+        mutex.withLock {
+            val hold = _restoreHold.value
+            if (hold.bannerDismissed) return
+            val dismissed = hold.copy(bannerDismissed = true)
+            _restoreHold.value = dismissed
+            withContext(NonCancellable) { saveHold(dismissed) }
+        }
+    }
+
+    /**
+     * How many rows this launch's migration brought back paused — once: the first call after it returns that
+     * number, every later call 0, so the "Restored N unfinished items" snackbar shows once, not again on every
+     * screen rotation. Always 0 on a launch that did not migrate.
+     */
+    fun consumeRestoreNotice(): Int = restoreNotice.getAndSet(0)
     suspend fun cancel(id: String) {
         val before = _state.value.job(id)
         val wasRunning = before?.status.let { it == DownloadStatus.RUNNING || it == DownloadStatus.PREPARING }
@@ -176,6 +228,13 @@ class QueueManager(
      * running — before the load finished is neither dropped nor reverted (it queues behind the restored rows).
      * A store that cannot be read
      * leaves the queue empty but still ends the load, so nothing waits on [rehydrated] forever.
+     *
+     * One exception, a one-time migration: builds up to v1.0.3 saved the queue but never restored it, so the
+     * FIRST restore (no marker in the [RestoreHoldStore] yet) must not start that old work by itself. Every
+     * unfinished row comes back PAUSED instead and is held, and the marker is written at once, for an empty
+     * queue too. Held rows stay PAUSED on every later launch until the user acts on them (see [restoreHold]);
+     * all other rows follow the rule above from the very next launch. A marker that cannot be read counts as
+     * "not migrated yet": better a paused queue than downloads nobody asked for.
      */
     suspend fun rehydrate() {
         if (_rehydrated.value) return
@@ -187,25 +246,48 @@ class QueueManager(
             android.util.Log.e("SieveQueue", "loading the persisted queue failed", t)
             emptyList()
         }
+        val stored = try {
+            restoreStore.load()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            android.util.Log.w("SieveQueue", "reading the restore marker failed; holding the restored rows", t)
+            RestoreHold()
+        }
         mutex.withLock {
             if (_rehydrated.value) return // another caller finished the load while this one was reading
             val before = _state.value
             val fresh = loaded.filter { before.job(it.id) == null }
-            val restored = QueueReducer.reduce(QueueState(jobs = fresh), QueueEvent.Rehydrate).jobs
+            // The saved ids rule for an unfinished row, whatever status it was last saved with: the hold is written
+            // before the rows, so a crash in between leaves the ids saved and the rows as they were.
+            val held = fresh.filter { !it.status.isTerminal && (!stored.migrated || it.id in stored.heldIds) }
+                .mapTo(HashSet()) { it.id }
+            val restored = QueueReducer.reduce(QueueState(jobs = fresh), QueueEvent.RehydrateHeld(held)).jobs
             // A job enqueued before the load took its position from the still-empty queue, so it ties with (or
             // jumps ahead of) the older restored rows: queue it behind them, keeping its own order.
             val floor = restored.maxOfOrNull { it.position }
             val live = if (floor == null || before.jobs.all { it.position > floor }) before.jobs
             else before.jobs.sortedBy { it.position }.mapIndexed { i, j -> j.copy(position = floor + 1 + i) }
             _state.value = before.copy(jobs = live + restored)
+            val hold = stored.copy(migrated = true, heldIds = held)
+            _restoreHold.value = hold
+            if (!stored.migrated) restoreNotice.set(held.size)
             withContext(NonCancellable) {
+                // Marker and ids first, then the rows (see applyLocked); nothing to write on a launch with no news.
+                if (hold != stored) saveHold(hold)
                 val changed = restored.filter { r -> fresh.first { it.id == r.id } != r } + live.filter { before.job(it.id) != it }
-                // Best-effort: the rows are already QUEUED in memory and persist with their next change.
+                // Best-effort: the rows are already restored in memory and persist with their next change.
                 if (changed.isNotEmpty()) runCatching { persistence.upsertAll(changed) }
                     .onFailure { android.util.Log.w("SieveQueue", "persisting the restored rows failed", it) }
             }
             _rehydrated.value = true
         }
+    }
+
+    /** Best-effort, inside NonCancellable: a store that fails costs the hold its memory, never the queue its work. */
+    private suspend fun saveHold(hold: RestoreHold) {
+        runCatching { restoreStore.save(hold) }
+            .onFailure { android.util.Log.w("SieveQueue", "saving the restore hold failed", it) }
     }
 
     fun start(scope: CoroutineScope) {

@@ -2,11 +2,14 @@ package com.sieve.queue.service
 
 import android.content.Intent
 import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.InMemoryRestoreHoldStore
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.core.QueuePersistence
 import com.sieve.queue.core.QueueState
+import com.sieve.queue.core.RestoreHold
+import com.sieve.queue.core.RestoreHoldStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,10 +52,17 @@ class QueueRestoreOnLaunchTest {
 
     private fun persisted(vararg jobs: QueueJob) = InMemoryPersistence().also { it.store.value = jobs.associateBy { j -> j.id } }
 
-    private fun manager(persistence: QueuePersistence, port: DownloadPort = FakeDownloadPort()) = QueueManager(
+    private fun manager(
+        persistence: QueuePersistence,
+        port: DownloadPort = FakeDownloadPort(),
+        store: RestoreHoldStore = InMemoryRestoreHoldStore(),
+    ) = QueueManager(
         JobDriver(port, FakeTranscodePort()), port, FakeTranscodePort(), persistence, FakeOutputProvider(), FakeClock(),
-        initial = QueueState(maxDownloads = 2),
+        initial = QueueState(maxDownloads = 2), restoreStore = store,
     )
+
+    /** No marker yet: the launch of a user upgrading from v1.0.3 or older. */
+    private fun upgrade() = InMemoryRestoreHoldStore(RestoreHold())
 
     private fun realScope() = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { scopes += it }
 
@@ -86,6 +96,73 @@ class QueueRestoreOnLaunchTest {
         val started: Intent? = shadowOf(app).nextStartedService
         assertNotNull("the interrupted download must be picked up again", started)
         assertEquals(QueueService::class.java.name, started!!.component!!.className)
+    }
+
+    // --- the one-time "restore paused" migration, through the repository the UI and the receiver use ---------
+
+    @Test fun `the first restore after an upgrade brings unfinished work back paused and starts no service`() = runTest {
+        val persistence = persisted(row("cut", DownloadStatus.RUNNING, 1), row("wait", DownloadStatus.QUEUED, 2), row("done", DownloadStatus.COMPLETED, 3))
+
+        val repo = QueueRepository.create(app, manager(persistence, store = upgrade()), backgroundScope)
+        runCurrent()
+
+        assertEquals(DownloadStatus.PAUSED, repo.state.value.job("cut")!!.status)
+        assertEquals(DownloadStatus.PAUSED, repo.state.value.job("wait")!!.status)
+        assertEquals(DownloadStatus.COMPLETED, repo.state.value.job("done")!!.status)
+        assertEquals(setOf("cut", "wait"), repo.restore.value.heldIds)
+        assertEquals(2, repo.consumeRestoreNotice())
+        assertNull("nothing queued, so nothing for a service to do", shadowOf(app).nextStartedService)
+    }
+
+    @Test fun `resume all wakes the service and queues every held row`() = runTest {
+        val repo = QueueRepository.create(app, manager(persisted(row("a", DownloadStatus.RUNNING, 1), row("b", DownloadStatus.QUEUED, 2)), store = upgrade()), backgroundScope)
+        runCurrent()
+        assertNull(shadowOf(app).nextStartedService)
+
+        repo.resumeHeld()
+        runCurrent()
+
+        assertEquals(listOf(DownloadStatus.QUEUED, DownloadStatus.QUEUED), repo.state.value.jobs.sortedBy { it.position }.map { it.status })
+        assertTrue(repo.restore.value.heldIds.isEmpty())
+        assertNotNull("resumed work needs the service", shadowOf(app).nextStartedService)
+    }
+
+    @Test fun `resume all with nothing held does not start the service`() = runTest {
+        val repo = QueueRepository.create(app, manager(persisted(row("done", DownloadStatus.COMPLETED))), backgroundScope)
+        runCurrent()
+
+        repo.resumeHeld()
+        runCurrent()
+
+        assertNull(shadowOf(app).nextStartedService)
+    }
+
+    @Test fun `dismissing the banner keeps the rows paused`() = runTest {
+        val repo = QueueRepository.create(app, manager(persisted(row("a", DownloadStatus.RUNNING)), store = upgrade()), backgroundScope)
+        runCurrent()
+
+        repo.dismissRestoreBanner()
+        runCurrent()
+
+        assertTrue(repo.restore.value.bannerDismissed)
+        assertEquals(setOf("a"), repo.restore.value.heldIds)
+        assertEquals(DownloadStatus.PAUSED, repo.state.value.job("a")!!.status)
+    }
+
+    @Test fun `a service restarted over only held rows stops once the queue is loaded`() {
+        val gate = CompletableDeferred<Unit>()
+        val inner = persisted(row("cut", DownloadStatus.RUNNING))
+        QueueRepository.create(app, manager(GatedPersistence(inner, gate), store = upgrade()), realScope())
+
+        val controller = Robolectric.buildService(QueueService::class.java).create()
+        val service = controller.get()
+        Thread.sleep(300)
+        assertFalse(shadowOf(service).isStoppedBySelf)
+
+        gate.complete(Unit)
+        assertTrue("held rows are paused work: nothing is running, so the service has nothing to stay up for",
+            eventually { shadowOf(service).isStoppedBySelf })
+        controller.destroy()
     }
 
     // --- the sticky-restart path: the service is created while the queue is still being loaded -------------

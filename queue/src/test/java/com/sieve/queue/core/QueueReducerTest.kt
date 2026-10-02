@@ -269,6 +269,56 @@ class QueueReducerTest {
         assertEquals(DownloadStatus.FAILED, s.job("e")!!.status)
     }
 
+    @Test fun `rehydrate with held ids brings those rows back PAUSED and the rest by the normal rule`() {
+        val s = r(
+            QueueState(
+                jobs = listOf(
+                    dl("run", DownloadStatus.RUNNING), dl("prep", DownloadStatus.PREPARING), dl("wait", DownloadStatus.QUEUED),
+                    dl("hold", DownloadStatus.PAUSED), tx("done", DownloadStatus.COMPLETED), dl("bad", DownloadStatus.FAILED),
+                ),
+            ),
+            QueueEvent.RehydrateHeld(setOf("run", "wait", "hold", "done")),
+        )
+        assertEquals(DownloadStatus.PAUSED, s.job("run")!!.status)    // held: paused, not queued
+        assertEquals(DownloadStatus.PAUSED, s.job("wait")!!.status)   // held rows include ones that were only waiting
+        assertEquals(DownloadStatus.PAUSED, s.job("hold")!!.status)
+        assertEquals(DownloadStatus.QUEUED, s.job("prep")!!.status)   // not held: Windows parity, in-flight -> QUEUED
+        assertEquals(DownloadStatus.COMPLETED, s.job("done")!!.status) // a finished row is never held, whatever the set says
+        assertEquals(DownloadStatus.FAILED, s.job("bad")!!.status)
+    }
+
+    @Test fun `a held row looks like a paused one - no speed, no eta, no stamped reason, no backoff`() {
+        val running = dl("a", DownloadStatus.RUNNING).copy(
+            cancelReason = CancelReason.PAUSE, nextEligibleAt = 99L,
+            progress = UnifiedProgress(fraction = 0.4f, speed = "1.0MiB/s", eta = "00:10", phase = Phase.DOWNLOADING),
+        )
+        val j = r(QueueState(jobs = listOf(running)), QueueEvent.RehydrateHeld(setOf("a"))).job("a")!!
+        assertEquals(DownloadStatus.PAUSED, j.status)
+        assertNull(j.cancelReason)
+        assertEquals(0L, j.nextEligibleAt)
+        assertEquals(0.4f, j.progress.fraction!!, 1e-4f)   // the partial's progress is kept
+        assertNull(j.progress.speed)
+        assertEquals("paused", j.progress.eta)
+        assertEquals(Phase.PAUSED, j.progress.phase)
+    }
+
+    @Test fun `rehydrate with no held ids is the plain rehydrate`() {
+        val state = QueueState(jobs = listOf(dl("a", DownloadStatus.RUNNING), dl("b", DownloadStatus.PAUSED), dl("c", DownloadStatus.FAILED)))
+        assertEquals(r(state, QueueEvent.Rehydrate), r(state, QueueEvent.RehydrateHeld(emptySet())))
+    }
+
+    @Test fun `resume many resumes the paused rows named and nothing else`() {
+        val s = r(
+            QueueState(jobs = listOf(dl("a", DownloadStatus.PAUSED), dl("b", DownloadStatus.PAUSED), dl("c", DownloadStatus.PAUSED), dl("d", DownloadStatus.RUNNING))),
+            QueueEvent.ResumeMany(setOf("a", "b", "d", "missing")),
+        )
+        assertEquals(DownloadStatus.QUEUED, s.job("a")!!.status)
+        assertEquals(DownloadStatus.QUEUED, s.job("b")!!.status)
+        assertEquals(DownloadStatus.PAUSED, s.job("c")!!.status)     // not named
+        assertEquals(DownloadStatus.RUNNING, s.job("d")!!.status)    // named, but not paused: untouched
+        assertEquals(r(s, QueueEvent.Resume("a")).job("a"), s.job("a")) // exactly what a single Resume does
+    }
+
     @Test fun `reorder moves before target`() {
         val s = r(QueueState(jobs = listOf(dl("a"), dl("b"), dl("c"))), QueueEvent.Reorder("c", "a"))
         assertEquals(listOf("c", "a", "b"), orderedIds(s))

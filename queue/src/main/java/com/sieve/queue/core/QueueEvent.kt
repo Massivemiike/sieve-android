@@ -5,6 +5,8 @@ sealed interface QueueEvent {
     data class Enqueue(val job: QueueJob) : QueueEvent
     data class Pause(val id: String) : QueueEvent
     data class Resume(val id: String) : QueueEvent
+    /** Resume each named row that is PAUSED, as one change ("Resume all" on the restored rows). */
+    data class ResumeMany(val ids: Set<String>) : QueueEvent
     data class Cancel(val id: String) : QueueEvent
     data class Retry(val id: String) : QueueEvent            // manual: reset to QUEUED, attempt++
     data class Remove(val id: String) : QueueEvent
@@ -30,4 +32,6 @@ sealed interface QueueEvent {
     // ---- timers / lifecycle ----
     data class AutoRetryFired(val id: String) : QueueEvent   // 5 s backoff elapsed (drain trigger)
     data object Rehydrate : QueueEvent                       // process restart: in-flight -> QUEUED
+    /** Rehydrate, but the unfinished rows in [heldIds] come back PAUSED instead (the one-time "restore paused" migration). */
+    data class RehydrateHeld(val heldIds: Set<String>) : QueueEvent
 }
