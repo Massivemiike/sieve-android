@@ -85,6 +85,11 @@ data class QueueJob(
     }
     /** yt-dlp -c continues a partial; ffmpeg cannot resume a partial output. */
     val resumable: Boolean get() = spec is JobSpec.Download
+    /**
+     * True once [filePath] is where the sink saved the output (its `content://` / `file://` Uri), as opposed to
+     * the work-dir path yt-dlp logs mid-run. A failed run's saved files stay reachable across its Retry.
+     */
+    val hasSavedOutput: Boolean get() = filePath?.trim()?.let { it.startsWith("content://") || it.startsWith("file://") } == true
 }
 
 /** Normalized event algebra the reducer consumes. Drivers (Task 11) collapse
@@ -109,6 +114,8 @@ data class FailureInfo(
 )
 
 /** Returned by OutputLocationProvider.prepare(); work path is STABLE per job id
- *  so a resumed yt-dlp -c finds its own .part. */
-data class PreparedOutput(val workDir: String, val workFileTemplate: String)
+ *  so a resumed yt-dlp -c finds its own .part. [archivePath] is a per-job yt-dlp `--download-archive`
+ *  that lives OUTSIDE [workDir]: it remembers which entries already finished, so a Retry after files were
+ *  saved (and the work dir wiped) skips them instead of downloading and saving duplicates. */
+data class PreparedOutput(val workDir: String, val workFileTemplate: String, val archivePath: String? = null)
 data class FinalLocation(val displayPath: String, val uri: String?)

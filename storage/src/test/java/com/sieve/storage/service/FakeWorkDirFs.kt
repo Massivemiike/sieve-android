@@ -16,7 +16,11 @@ class FakeWorkDirFs : WorkDirFs {
         files.getOrPut(path) { LinkedHashMap() }
     }
 
-    override fun exists(path: String) = path in dirs
+    // A single file (the per-job download archive lives next to the work dir, not in it) is addressed
+    // as <dir>/<leaf>, exactly like a real path.
+    private fun isFile(path: String) = files[path.substringBeforeLast('/', "")]?.containsKey(path.substringAfterLast('/')) == true
+
+    override fun exists(path: String) = path in dirs || isFile(path)
     override fun listLeafNames(path: String) = files[path]?.keys?.toList() ?: emptyList()
     override fun openRead(path: String, leaf: String): InputStream =
         ByteArrayInputStream(files[path]?.get(leaf) ?: error("no file $path/$leaf"))
@@ -25,6 +29,7 @@ class FakeWorkDirFs : WorkDirFs {
         deleteCalls++
         dirs -= path
         files.remove(path)
+        files[path.substringBeforeLast('/', "")]?.remove(path.substringAfterLast('/'))
     }
 
     fun putFile(dir: String, leaf: String, bytes: ByteArray) {

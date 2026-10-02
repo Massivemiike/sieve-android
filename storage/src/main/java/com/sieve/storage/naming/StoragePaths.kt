@@ -10,6 +10,12 @@ object StoragePaths {
         return "$base/work/$id"
     }
 
+    /**
+     * The job's yt-dlp download archive: a sibling of [workDir], not inside it, so wiping the work dir
+     * after a partial playlist was saved keeps the record of which entries are already done.
+     */
+    fun archiveFile(filesDirPath: String, jobId: String): String = workDir(filesDirPath, jobId) + ".archive.txt"
+
     /** One flat, safe path segment: no separators, no traversal. */
     fun sanitizeLabelSegment(label: String): String {
         val flattened = label.replace('/', '_').replace('\\', '_')

@@ -120,7 +120,7 @@ object AppGraph {
             // The picked file's cache copy goes once its job is done with it (completed / cancelled / row removed).
             releaseSource = { job -> (job.spec as? JobSpec.Transcode)?.let { sourceCopies.release(it.inputPath) } },
         )
-        queue = QueueRepository.create(app, manager, appScope)
+        queue = QueueRepository.create(app, manager, appScope) // also restores the persisted queue, once
         queue.followLimits(appSettings.flow.map { it.maxDownloads to it.maxTranscodes })
         autoUpdateYtDlp(ioScope)
         initialized = true

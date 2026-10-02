@@ -1,6 +1,7 @@
 package com.sieve.queue.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -57,6 +58,26 @@ class QueueReducerTest {
             QueueEvent.Signal(JobSignal.Log("a", "[download] Destination: /x/out.mp4", isError = false, filePath = "/x/out.mp4")),
         )
         assertEquals("/x/out.mp4", s.job("a")!!.filePath)
+    }
+
+    @Test fun `a saved location survives the work-dir path a retried run logs`() {
+        val saved = "content://media/external/downloads/9"
+        val retried = dl("a", DownloadStatus.RUNNING).copy(filePath = saved, attempt = 1)
+        val s = r(
+            QueueState(jobs = listOf(retried)),
+            QueueEvent.Signal(JobSignal.Log("a", "[download] Destination: /work/a/out.mp4", isError = false, filePath = "/work/a/out.mp4")),
+        )
+        assertEquals(saved, s.job("a")!!.filePath)
+        assertTrue(s.job("a")!!.hasSavedOutput)
+        assertEquals("content://media/external/downloads/10", r(s, QueueEvent.OutputSaved("a", "content://media/external/downloads/10")).job("a")!!.filePath)
+    }
+
+    @Test fun `only a sink Uri counts as saved output, not a work-dir path`() {
+        fun saved(path: String?) = dl("a").copy(filePath = path).hasSavedOutput
+        assertTrue(saved("content://media/external/downloads/9"))
+        assertTrue(saved("file:///data/user/0/com.sieve/files/output/Sieve/x.mp4"))
+        assertFalse(saved("/data/user/0/com.sieve/files/work/a/x.mp4"))
+        assertFalse(saved(null))
     }
 
     @Test fun `terminal Succeeded goes COMPLETED with fraction 1 and completedAt`() {

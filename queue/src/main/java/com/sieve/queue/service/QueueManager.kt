@@ -63,6 +63,13 @@ class QueueManager(
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<QueueState> = _state.asStateFlow()
 
+    private val _rehydrated = MutableStateFlow(false)
+    /**
+     * True once the persisted rows are in [state] (or could not be read). Until then an empty queue only means
+     * "not loaded yet" — a restarted service must not read it as idle and stop itself.
+     */
+    val rehydrated: StateFlow<Boolean> = _rehydrated.asStateFlow()
+
     private val mutex = Mutex()
     private val runningJobs = ConcurrentHashMap<String, Job>()
     private lateinit var scope: CoroutineScope
@@ -161,10 +168,43 @@ class QueueManager(
         limits.distinctUntilChanged().collect { (downloads, transcodes) -> setLimits(downloads, transcodes) }
     }
 
+    /**
+     * Loads the persisted queue, ONCE per process (later calls are no-ops): finished rows come back as they
+     * were, work the dead process left in flight (running / preparing / paused) comes back QUEUED, as on
+     * desktop. It merges into the live state rather than replacing it, so a job enqueued — or already
+     * running — before the load finished is neither dropped nor reverted (it queues behind the restored rows).
+     * A store that cannot be read
+     * leaves the queue empty but still ends the load, so nothing waits on [rehydrated] forever.
+     */
     suspend fun rehydrate() {
-        val loaded = persistence.loadAll()
-        mutex.withLock { _state.value = _state.value.copy(jobs = loaded) }
-        dispatch(QueueEvent.Rehydrate)
+        if (_rehydrated.value) return
+        val loaded = try {
+            persistence.loadAll()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            android.util.Log.e("SieveQueue", "loading the persisted queue failed", t)
+            emptyList()
+        }
+        mutex.withLock {
+            if (_rehydrated.value) return // another caller finished the load while this one was reading
+            val before = _state.value
+            val fresh = loaded.filter { before.job(it.id) == null }
+            val restored = QueueReducer.reduce(QueueState(jobs = fresh), QueueEvent.Rehydrate).jobs
+            // A job enqueued before the load took its position from the still-empty queue, so it ties with (or
+            // jumps ahead of) the older restored rows: queue it behind them, keeping its own order.
+            val floor = restored.maxOfOrNull { it.position }
+            val live = if (floor == null || before.jobs.all { it.position > floor }) before.jobs
+            else before.jobs.sortedBy { it.position }.mapIndexed { i, j -> j.copy(position = floor + 1 + i) }
+            _state.value = before.copy(jobs = live + restored)
+            withContext(NonCancellable) {
+                val changed = restored.filter { r -> fresh.first { it.id == r.id } != r } + live.filter { before.job(it.id) != it }
+                // Best-effort: the rows are already QUEUED in memory and persist with their next change.
+                if (changed.isNotEmpty()) runCatching { persistence.upsertAll(changed) }
+                    .onFailure { android.util.Log.w("SieveQueue", "persisting the restored rows failed", it) }
+            }
+            _rehydrated.value = true
+        }
     }
 
     fun start(scope: CoroutineScope) {
@@ -187,7 +227,10 @@ class QueueManager(
         // in PREPARING forever (the rebound service's drain only admits QUEUED). Leave jobs QUEUED;
         // start()'s kick re-drains once a live scope is bound.
         if (!this::scope.isInitialized || !scope.isActive) return@withLock
-        val toAdmit = NextItemSelector.select(_state.value, clock.nowMs())
+        // A row put back to QUEUED (Retry, Resume) while its previous run is still unwinding is not claimed yet:
+        // that run's coroutine stays in runningJobs until its finally block, so launchJob would refuse the launch
+        // and leave the row PREPARING forever. It waits as QUEUED; the unwinding run's own finally re-drains.
+        val toAdmit = NextItemSelector.select(_state.value, clock.nowMs()).filterNot { runningJobs.containsKey(it) }
         if (toAdmit.isEmpty()) return@withLock
         applyLocked(QueueEvent.MarkPreparing(toAdmit))
         for (id in toAdmit) launchJob(id)
@@ -231,6 +274,12 @@ class QueueManager(
                                 _state.value.job(id)?.takeIf { it.status == DownloadStatus.FAILED }?.let { notifyFailed(it) }
                             }
                         } else {
+                            // A failed run's work dir is settled BEFORE FAILED is dispatched, like finalize before
+                            // COMPLETED: the finished files are copied out while the row is still live, so the
+                            // queue is not idle (the service stays up), and Retry / Remove cannot race the copy.
+                            if (signal is JobSignal.Terminal && signal.outcome is Outcome.Failed && endsFailed(id, signal)) {
+                                keepFinishedFiles(_state.value.job(id) ?: job, prepared)
+                            }
                             dispatch(QueueEvent.Signal(signal))
                             onSignal(id, signal, prepared)
                         }
@@ -277,13 +326,41 @@ class QueueManager(
                     // reducer chose auto-retry → schedule a delayed re-drain after the backoff
                     scope.launch { delay(_state.value.retryPolicy.backoffMs); drain() }
                 } else if (job.status == DownloadStatus.FAILED) {
-                    // NonCancellable: the FAILED dispatch just flipped the queue idle, which stops the service
-                    // and cancels this scope — the failure must still be announced and the work dir cleaned.
-                    withContext(NonCancellable) {
-                        output.discard(job, prepared)
-                        notifyFailed(job)
-                    }
+                    // The work dir was already settled (see launchJob); the row carries the saved location, if any.
+                    notifyFailed(job)
                 }
+        }
+    }
+
+    /** Would this Failed terminal leave the row FAILED, rather than hand it to an automatic retry? */
+    private fun endsFailed(id: String, terminal: JobSignal.Terminal): Boolean =
+        QueueReducer.reduce(_state.value, QueueEvent.Signal(terminal)).job(id)?.status == DownloadStatus.FAILED
+
+    /**
+     * Settles a failing job's work dir BEFORE its row shows FAILED: saves whatever finished in it, else clears
+     * it. yt-dlp exits non-zero when ONE playlist entry fails, having downloaded the rest; discarding the dir
+     * would delete all of that, and no Retry could bring it back. The row then goes FAILED (with the error and
+     * the saved location), and the per-job download archive makes its Retry skip the saved entries instead of
+     * saving duplicates. Known limit: yt-dlp archives an entry only after post-processing, so one whose media
+     * finished but whose post-processor errored is saved here yet re-downloaded (and saved again) by a Retry.
+     * Downloads only: a failed ffmpeg run leaves a truncated file, which is no result. A failed save keeps the
+     * work dir (the finished files are still in it) for the Retry instead of deleting them. Never throws: the
+     * FAILED dispatch that follows must happen whatever became of the files. NonCancellable: the copy must
+     * survive a service teardown once started, like finalize.
+     */
+    private suspend fun keepFinishedFiles(job: QueueJob, prepared: PreparedOutput) {
+        withContext(NonCancellable) {
+            try {
+                val saved = if (job.spec is JobSpec.Download) output.salvage(job, prepared) else null
+                if (saved == null) {
+                    output.discard(job, prepared)
+                } else {
+                    android.util.Log.i("SieveFin", "salvage OK id=${job.id} -> ${saved.displayPath} uri=${saved.uri}")
+                    dispatch(QueueEvent.OutputSaved(job.id, saved.uri ?: saved.displayPath))
+                }
+            } catch (t: Throwable) {
+                android.util.Log.e("SieveFin", "settling the work dir FAILED id=${job.id}; leaving it for the Retry", t)
+            }
         }
     }
 
