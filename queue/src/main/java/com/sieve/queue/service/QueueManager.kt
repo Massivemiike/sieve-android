@@ -393,12 +393,32 @@ class QueueManager(
                     }
             } catch (c: CancellationException) {
                 throw c
+            } catch (t: Throwable) {
+                // This coroutine has no exception handler: anything escaping a run (an I/O error from a pipe that
+                // a cancel closed, a bug) would kill the whole app. End this one job instead — as the user's
+                // cancel/pause when one is stamped, else as a failure carrying the reason.
+                android.util.Log.e("SieveQueue", "job $id ended with an unexpected error", t)
+                withContext(NonCancellable) { endUnexpectedly(id, t, prepared) }
             } finally {
                 runningJobs.remove(id)
                 drain()
             }
         }
         runningJobs[id] = coroutine
+    }
+
+    private suspend fun endUnexpectedly(id: String, t: Throwable, prepared: PreparedOutput?) {
+        val live = _state.value.job(id)?.takeUnless { it.status.isTerminal } ?: return
+        val outcome = live.cancelReason?.let { Outcome.Cancelled(it) }
+            ?: Outcome.Failed(FailureInfo(t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName))
+        val terminal = JobSignal.Terminal(id, outcome)
+        dispatch(QueueEvent.Signal(terminal))
+        if (prepared != null) {
+            runCatching { onSignal(id, terminal, prepared) }
+                .onFailure { android.util.Log.w("SieveQueue", "cleanup after an unexpected error failed for $id", it) }
+        } else if (outcome is Outcome.Failed) {
+            _state.value.job(id)?.takeIf { it.status == DownloadStatus.FAILED }?.let { notifyFailed(it) }
+        }
     }
 
     private suspend fun onSignal(id: String, signal: JobSignal, prepared: PreparedOutput) {

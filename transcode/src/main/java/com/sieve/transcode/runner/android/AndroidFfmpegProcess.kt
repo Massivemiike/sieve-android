@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.TimeUnit
 
@@ -25,8 +26,16 @@ class AndroidFfmpegProcess(private val process: Process) : FfmpegProcess {
     override val stderr: Flow<String> = readerFlow(process.errorStream, appendNewline = false)
 
     private fun readerFlow(stream: InputStream, appendNewline: Boolean): Flow<String> = flow {
-        stream.bufferedReader().useLines { lines ->
-            for (line in lines) emit(if (appendNewline) line + "\n" else line)
+        val reader = stream.bufferedReader()
+        try {
+            while (true) {
+                // destroy() (cancel escalating past 'q') closes the pipes while this read is blocked; that is
+                // the end of the output, not an error. Only the read is guarded, never the emit.
+                val line = try { reader.readLine() } catch (_: IOException) { null } ?: break
+                emit(if (appendNewline) line + "\n" else line)
+            }
+        } finally {
+            runCatching { reader.close() }
         }
     }.flowOn(Dispatchers.IO)
 

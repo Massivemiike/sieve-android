@@ -44,6 +44,22 @@ private class QuitOnCancelPort(private val cancelFailure: Throwable? = null) : T
     fun failWith(id: String, code: Int) { exit(id).complete(TranscodeEvent.Done(code, "boom", "tail")) }
 }
 
+/**
+ * A port whose run dies with an exception instead of finishing — what a reader blocked on ffmpeg's pipe
+ * does when cancel escalates to destroy() and Android closes the pipe under it (seen on the S26), or any
+ * other unexpected failure inside a run.
+ */
+private class ThrowingPort : TranscodePort {
+    private val dies = CompletableDeferred<Unit>()
+    override fun run(id: String, job: TranscodeJob): Flow<TranscodeEvent> = flow {
+        emit(TranscodeEvent.Progress(FfmpegProgress(outTimeUs = 3_000_000L, percent = 0.3, speed = 1.0, speedRaw = "1x")))
+        dies.await()
+        throw java.io.InterruptedIOException("read interrupted by close() on another thread")
+    }
+    override suspend fun cancel(id: String, graceMs: Long) { die() }
+    fun die() { dies.complete(Unit) }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class QueueManagerTranscodeTest {
     private fun tx(id: String) = QueueJob(
@@ -71,6 +87,40 @@ class QueueManagerTranscodeTest {
             releaseSource = { releaseFailure?.let { t -> throw t }; released += it.id },
         )
         return Rig(m, out, released, completed)
+    }
+
+    // --- a run that throws must end its job, never the app -----------------------------------------
+
+    @Test fun `a cancel whose run dies with an exception ends CANCELLED instead of crashing`() = runTest {
+        val port = ThrowingPort()
+        val r = rig(port)
+        r.m.start(backgroundScope)
+        r.m.enqueue(tx("t"))
+        r.m.state.first { it.job("t")?.progress?.fraction != null }
+
+        r.m.cancel("t")
+        r.m.state.first { it.job("t")?.status?.isTerminal == true }
+        runCurrent()
+
+        assertEquals(DownloadStatus.CANCELLED, r.m.state.value.job("t")!!.status)
+        assertTrue(r.out.finalized.isEmpty())
+        assertEquals(listOf("t"), r.out.cleaned)
+    }
+
+    @Test fun `a run that dies with an exception on its own ends FAILED with the reason`() = runTest {
+        val port = ThrowingPort()
+        val r = rig(port)
+        r.m.start(backgroundScope)
+        r.m.enqueue(tx("t"))
+        r.m.state.first { it.job("t")?.progress?.fraction != null }
+
+        port.die()
+        r.m.state.first { it.job("t")?.status?.isTerminal == true }
+
+        val job = r.m.state.value.job("t")!!
+        assertEquals(DownloadStatus.FAILED, job.status)
+        assertTrue(job.error.orEmpty(), job.error.orEmpty().contains("read interrupted"))
+        assertTrue(r.completed.isEmpty())
     }
 
     // --- cancel / pause while ffmpeg exits 0 on 'q' -------------------------------------------------

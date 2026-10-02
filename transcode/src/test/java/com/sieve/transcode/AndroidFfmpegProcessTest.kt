@@ -5,14 +5,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
+import java.io.InterruptedIOException
+import java.io.OutputStream
 import kotlin.time.Duration.Companion.seconds
 
 /**
@@ -53,5 +59,32 @@ class AndroidFfmpegProcessTest {
                 p.destroyForcibly()
             }
         }
+    }
+
+    /** Serves [text], then fails the next read the way Android does when destroy() closes the pipe mid-read. */
+    private class ClosedUnderReader(text: String) : InputStream() {
+        private val bytes = text.toByteArray()
+        private var i = 0
+        override fun read(): Int {
+            if (i < bytes.size) return bytes[i++].toInt() and 0xFF
+            throw InterruptedIOException("read interrupted by close() on another thread")
+        }
+    }
+
+    private class FakeProcess(private val out: InputStream, private val err: InputStream) : Process() {
+        override fun getOutputStream(): OutputStream = ByteArrayOutputStream()
+        override fun getInputStream(): InputStream = out
+        override fun getErrorStream(): InputStream = err
+        override fun waitFor(): Int = 255
+        override fun exitValue(): Int = 255
+        override fun destroy() {}
+    }
+
+    // Cancel escalates to destroy(), which closes ffmpeg's pipes while both readers are blocked in read(): that
+    // used to escape as an uncaught InterruptedIOException and crash the app (seen on the S26).
+    @Test fun aPipeClosedUnderTheReaderEndsTheOutputInsteadOfThrowing() = runTest {
+        val p = AndroidFfmpegProcess(FakeProcess(ClosedUnderReader("out_time_us=1\nprogress=continue\n"), ClosedUnderReader("frame=1\n")))
+        assertEquals(listOf("out_time_us=1\n", "progress=continue\n"), p.stdout.toList())
+        assertEquals(listOf("frame=1"), p.stderr.toList())
     }
 }
