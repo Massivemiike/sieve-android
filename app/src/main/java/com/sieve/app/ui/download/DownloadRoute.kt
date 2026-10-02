@@ -301,13 +301,16 @@ private fun PresetCard(preset: DownloadPreset, selected: Boolean, onClick: () ->
             Icon(preset.icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = if (selected) cs.primary else cs.onSurfaceVariant)
         }
         Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(preset.label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(preset.label, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            // The badge rides the description line: a two-column card has no room for it beside the label
+            // (it got squeezed into a vertical sliver there).
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 if (preset.badge != null) {
-                    SieveChip(preset.badge, ChipKind.ACCENT)
+                    Text(preset.badge, style = MaterialTheme.typography.labelSmall, color = cs.primary, maxLines = 1, softWrap = false)
+                    Text(" · ", style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1)
                 }
+                Text(preset.desc, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(preset.desc, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         if (selected) {
             Box(Modifier.size(20.dp).clip(RoundedCornerShape(50)).background(cs.primary), contentAlignment = Alignment.Center) {
