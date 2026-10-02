@@ -238,6 +238,36 @@ class QueueManagerTest {
         m.cancel("a")
         assertEquals(DownloadStatus.CANCELLED, m.state.value.job("a")!!.status)
         assertEquals(listOf("a"), out.discarded)
+        assertEquals(listOf("a"), out.cleaned)
+    }
+
+    @Test fun `cancelling a running download drops its work dir and its download archive`() = runTest {
+        // discard() keeps the per-job archive for a FAILED row's Retry; a cancel is final, so it must go too.
+        val port = CancellableDownloadPort()
+        val (m, out) = manager(port)
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        m.state.first { it.job("a")?.progress?.fraction != null }
+
+        m.cancel("a")
+        m.state.first { it.job("a")?.status == DownloadStatus.CANCELLED }
+        runCurrent() // the terminal's cleanup runs just after its dispatch
+        assertEquals(listOf("a"), out.cleaned)
+    }
+
+    @Test fun `cancelling a queued download drops whatever it left from an earlier run`() = runTest {
+        // A QUEUED row can own a partial download: restored from a killed process, or waiting on an auto-retry.
+        val port = CancellableDownloadPort()
+        val (m, out) = manager(port, maxDownloads = 1)
+        m.start(backgroundScope)
+        m.enqueue(dl("a"))
+        m.enqueue(dl("b"))
+        m.state.first { it.job("a")?.progress?.fraction != null }
+        assertEquals(DownloadStatus.QUEUED, m.state.value.job("b")!!.status)
+
+        m.cancel("b")
+        assertEquals(DownloadStatus.CANCELLED, m.state.value.job("b")!!.status)
+        assertEquals(listOf("b"), out.cleaned)
     }
 
     @Test fun `pause stamps reason before cancel and lands PAUSED`() = runTest {

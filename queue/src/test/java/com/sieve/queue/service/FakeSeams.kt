@@ -33,6 +33,9 @@ class FakeOutputProvider(
     val finalized = mutableListOf<String>()
     val discarded = mutableListOf<String>()
     val salvaged = mutableListOf<String>()
+    /** Jobs whose leftovers were dropped for good (work dir AND download archive), not just discarded. */
+    val cleaned = mutableListOf<String>()
+    override suspend fun cleanup(job: QueueJob) { cleaned += job.id; super.cleanup(job) }
     override suspend fun prepare(job: QueueJob): PreparedOutput {
         prepareGate?.await() // when set, holds the job in PREPARING until released
         prepared += job.id

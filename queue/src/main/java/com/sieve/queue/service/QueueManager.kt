@@ -101,11 +101,12 @@ class QueueManager(
         val wasRunning = before?.status.let { it == DownloadStatus.RUNNING || it == DownloadStatus.PREPARING }
         dispatch(QueueEvent.Cancel(id))
         if (wasRunning) killJob(id) else drain()
-        // A paused job still owns its partial download; cancelling it from PAUSED has no terminal signal
-        // to trigger the usual discard.
-        if (before?.status == DownloadStatus.PAUSED) cleanupWorkDir(before)
-        // A queued job has no work dir, but it holds a source copy that no terminal signal will release.
-        else if (before?.status == DownloadStatus.QUEUED && _state.value.job(id)?.status == DownloadStatus.CANCELLED) releaseSourceCopy(before)
+        // Paused and queued rows get no terminal signal on cancel, yet both can own leftovers: a paused or
+        // restored partial download, the per-job download archive, a transcode's source copy.
+        val cancelledNow = _state.value.job(id)?.status == DownloadStatus.CANCELLED
+        if (before?.status == DownloadStatus.PAUSED || (before?.status == DownloadStatus.QUEUED && cancelledNow)) {
+            cleanupWorkDir(before)
+        }
     }
 
     /** Removes one finished row (completed / failed / cancelled). Live rows are ignored — cancel them first. */
@@ -335,10 +336,8 @@ class QueueManager(
                     releaseSourceCopy(job)
                 }
             }
-            is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) {
-                output.discard(job, prepared)
-                releaseSourceCopy(job)
-            }
+            // A user cancel is final: drop the per-job archive with the work dir (discard keeps it for a Retry).
+            is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) cleanupWorkDir(job)
             is Outcome.Failed ->
                 if (job.status == DownloadStatus.QUEUED) {
                     // reducer chose auto-retry → schedule a delayed re-drain after the backoff
