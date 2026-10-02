@@ -182,6 +182,31 @@ class QueueManagerRestoreHeldTest {
         assertTrue(runs.started.isEmpty())
     }
 
+    @Test fun `a queue that cannot be read leaves the migration for the next launch`() = runTest {
+        // Marking it done here would let the old rows load as ordinary in-flight work next time, and auto-start.
+        val persistence = persisted(*unfinished)
+        val flaky = object : QueuePersistence by persistence {
+            var fail = true
+            override suspend fun loadAll(): List<QueueJob> = if (fail) throw IllegalStateException("database is locked") else persistence.loadAll()
+        }
+        val store = upgrade()
+        val first = manager(flaky, store)
+        first.rehydrate()
+        assertTrue("the load still ends", first.rehydrated.value)
+        assertEquals(RestoreHold(), store.load())
+        assertTrue(store.saves.isEmpty())
+
+        flaky.fail = false
+        val runs = Runs()
+        val second = manager(flaky, store, runs)
+        second.start(backgroundScope)
+        second.rehydrate()
+        runCurrent()
+        unfinishedIds.forEach { assertEquals(DownloadStatus.PAUSED, second.status(it)) }
+        assertEquals(unfinishedIds, store.load().heldIds)
+        assertTrue(runs.started.isEmpty())
+    }
+
     // --- later launches -----------------------------------------------------------------------------------
 
     /** Runs the migration on [persistence] and returns the store a second launch would read. */

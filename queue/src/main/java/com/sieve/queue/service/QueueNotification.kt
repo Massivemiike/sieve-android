@@ -49,6 +49,7 @@ object QueueNotification {
     /** Set on the launch intent of a failure notification: the app should land on the Queue. */
     const val EXTRA_OPEN_QUEUE = "com.sieve.queue.OPEN_QUEUE"
     private const val DONE_ID_SALT = "queue_done:"
+    private val IN_PROGRESS = setOf(DownloadStatus.RUNNING, DownloadStatus.PREPARING, DownloadStatus.QUEUED)
 
     fun requestCode(id: String, action: NotifAction) = id.hashCode() * 31 + action.ordinal
 
@@ -57,12 +58,14 @@ object QueueNotification {
         val sum = QueueAggregator.summarize(state.jobs)
         val active = state.jobs.firstOrNull { it.status == DownloadStatus.RUNNING }
         val paused = state.jobs.firstOrNull { it.status == DownloadStatus.PAUSED }
+        val preparing = state.jobs.any { it.status == DownloadStatus.PREPARING }
         return when {
             active != null -> {
                 val frac = active.progress.fraction
                 val pct = ((frac ?: 0f) * 100).toInt()
-                // Count live rows only: the restored queue keeps finished rows until the user clears them.
-                val live = state.jobs.filterNot { it.status.isTerminal }
+                // Count only work that will run: finished rows stay in the restored queue until cleared, and paused
+                // ones (the user's, or held after an upgrade) wait for a resume.
+                val live = state.jobs.filter { it.status in IN_PROGRESS }
                 val runningIdx = 1 + live.indexOfFirst { it.id == active.id }.coerceAtLeast(0)
                 NotifModel(
                     title = "Downloading $runningIdx of ${live.size}",
@@ -71,7 +74,7 @@ object QueueNotification {
                     actions = listOf(NotifAction.PAUSE, NotifAction.CANCEL), actionTargetId = active.id,
                 )
             }
-            paused != null -> NotifModel(
+            paused != null && !preparing -> NotifModel(
                 title = "Paused — ${sum.queued + 1} remaining",
                 text = paused.title.ifBlank { "Item" },
                 progress = ((paused.progress.fraction ?: 0f) * 100).toInt(), indeterminate = false,

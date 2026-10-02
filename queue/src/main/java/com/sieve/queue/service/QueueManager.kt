@@ -109,8 +109,9 @@ class QueueManager(
         val trimmed = hold.stillHeldIn(after)
         if (trimmed != hold) _restoreHold.value = trimmed
         withContext(NonCancellable) {
-            // The released ids reach the store BEFORE the rows change: dying in between leaves a resumed row held
-            // (it comes back paused, one tap to resume again), never a row the user left paused starting by itself.
+            // The released ids reach the store BEFORE the rows change. Dying in between brings a just-released row
+            // back QUEUED (the user's resume wins; an unpersisted cancel behaves the same way anywhere), and a row the
+            // user left alone is never released, so it can't start by itself.
             if (trimmed != hold) saveHold(trimmed)
             val changed = after.jobs.filter { j -> before.job(j.id) != j }
             if (changed.isNotEmpty()) persistence.upsertAll(changed)
@@ -239,12 +240,14 @@ class QueueManager(
      */
     suspend fun rehydrate() {
         if (_rehydrated.value) return
+        var loadFailed = false
         val loaded = try {
             persistence.loadAll()
         } catch (c: CancellationException) {
             throw c
         } catch (t: Throwable) {
             android.util.Log.e("SieveQueue", "loading the persisted queue failed", t)
+            loadFailed = true
             emptyList()
         }
         val stored = try {
@@ -270,9 +273,11 @@ class QueueManager(
             val live = if (floor == null || before.jobs.all { it.position > floor }) before.jobs
             else before.jobs.sortedBy { it.position }.mapIndexed { i, j -> j.copy(position = floor + 1 + i) }
             _state.value = before.copy(jobs = live + restored)
-            val hold = stored.copy(migrated = true, heldIds = held)
+            // Rows that could not be read were never held: leave the migration for the next launch that can read
+            // them, or they would load then as ordinary in-flight work and start by themselves.
+            val hold = if (loadFailed) stored else stored.copy(migrated = true, heldIds = held)
             _restoreHold.value = hold
-            if (!stored.migrated) restoreNotice.set(held.size)
+            if (!stored.migrated && !loadFailed) restoreNotice.set(held.size)
             withContext(NonCancellable) {
                 // Marker and ids first, then the rows (see applyLocked); nothing to write on a launch with no news.
                 if (hold != stored) saveHold(hold)
