@@ -42,7 +42,9 @@ jobs:
           packages: platform-tools platforms;android-37.0 build-tools;37.0.0
 
       - name: Unit tests
-        run: ./gradlew :app:testDebugUnitTest --no-daemon
+        # Every module's unit tests, not only :app's: the transcode stall/cancel, queue and local-network tests live in
+        # :engine, :queue and :transcode.
+        run: ./gradlew :engine:testDebugUnitTest :queue:testDebugUnitTest :transcode:testDebugUnitTest :storage:testDebugUnitTest :data:testDebugUnitTest :app:testDebugUnitTest --no-daemon
 
       - name: Decode keystore + write keystore.properties
         env:
