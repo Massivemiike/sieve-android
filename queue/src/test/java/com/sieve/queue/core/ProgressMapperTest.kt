@@ -53,6 +53,37 @@ class ProgressMapperTest {
         assertNull(u.fraction)
     }
 
+    @Test fun `ffmpeg eta is the source time left over the encode speed`() {
+        val u = ProgressMapper.fromFfmpeg(
+            FfmpegProgress(outTimeUs = 20_000_000L, percent = null, speed = 2.0, speedRaw = "2x"),
+            totalDurationSec = 100.0,
+        )
+        assertEquals("00:40", u.eta) // 80 s of source left at 2x
+    }
+
+    @Test fun `ffmpeg eta over an hour is h-mm-ss`() {
+        val u = ProgressMapper.fromFfmpeg(
+            FfmpegProgress(outTimeUs = 0L, percent = null, speed = 1.0, speedRaw = "1x"),
+            totalDurationSec = 3725.0,
+        )
+        assertEquals("1:02:05", u.eta)
+    }
+
+    @Test fun `ffmpeg eta recovers the source length from the runner percent`() {
+        // The spec carried no duration, but the runner knew it (probe) and sent percent 0.25 at 30 s in.
+        val u = ProgressMapper.fromFfmpeg(
+            FfmpegProgress(outTimeUs = 30_000_000L, percent = 0.25, speed = 1.0, speedRaw = "1x"),
+            totalDurationSec = null,
+        )
+        assertEquals("01:30", u.eta) // 120 s total, 90 s left
+    }
+
+    @Test fun `ffmpeg eta is absent without a speed or a source length`() {
+        assertNull(ProgressMapper.fromFfmpeg(FfmpegProgress(5_000_000L, null, null, null), 10.0).eta)
+        assertNull(ProgressMapper.fromFfmpeg(FfmpegProgress(5_000_000L, null, 1.0, "1x"), null).eta)
+        assertNull(ProgressMapper.fromFfmpeg(FfmpegProgress(10_000_000L, null, 1.0, "1x"), 10.0).eta) // nothing left
+    }
+
     @Test fun `ffmpeg fraction is clamped to 0_1`() {
         val u = ProgressMapper.fromFfmpeg(
             FfmpegProgress(outTimeUs = 11_000_000L, percent = null, speed = null, speedRaw = null),

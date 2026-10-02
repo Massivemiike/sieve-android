@@ -2,6 +2,7 @@ package com.sieve.queue.core
 
 import com.sieve.engine.model.DownloadProgress
 import com.sieve.transcode.runner.FfmpegProgress
+import java.util.Locale
 
 private val SPEED_RE = Regex("""([\d.]+)\s*(GiB|MiB|KiB)""")
 private val BYTES_RE = Regex("""([\d.]+)\s*(GiB|MiB|KiB|GB|MB|KB|B)""", RegexOption.IGNORE_CASE)
@@ -73,9 +74,25 @@ object ProgressMapper {
         return UnifiedProgress(
             fraction = frac?.coerceIn(0f, 1f),
             speed = p.speedRaw,
-            eta = null,
+            eta = ffmpegEta(p, totalDurationSec),
             phase = Phase.TRANSCODING,
             sizeBytes = p.totalSize,
         )
+    }
+
+    /**
+     * ffmpeg reports no ETA (Windows derives one too): the source time still to encode divided by the
+     * encode speed multiplier (`1.5x`). The source length is the known duration, or recovered from the
+     * runner's percent; without either — or without a speed yet — there is nothing honest to show.
+     */
+    private fun ffmpegEta(p: FfmpegProgress, totalDurationSec: Double?): String? {
+        val speed = p.speed?.takeIf { it > 0.0 } ?: return null
+        val doneSec = p.outTimeUs / 1_000_000.0
+        val total = totalDurationSec?.takeIf { it > 0.0 }
+            ?: p.percent?.takeIf { it > 0.0 }?.let { doneSec / it }
+            ?: return null
+        val remaining = ((total - doneSec) / speed).takeIf { it.isFinite() && it > 0.0 } ?: return null
+        val s = Math.ceil(remaining).toLong()
+        return if (s >= 3600) "%d:%02d:%02d".format(Locale.ROOT, s / 3600, s % 3600 / 60, s % 60) else "%02d:%02d".format(Locale.ROOT, s / 60, s % 60)
     }
 }

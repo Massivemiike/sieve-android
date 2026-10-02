@@ -6,8 +6,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.InputStream
+import java.util.concurrent.TimeUnit
 
 /**
  * Real [FfmpegProcess] backed by a [java.lang.Process]. stdout and stderr are drained on separate
@@ -35,7 +37,13 @@ class AndroidFfmpegProcess(private val process: Process) : FfmpegProcess {
 
     override fun destroy() = process.destroy()
     override fun destroyForcibly() { process.destroyForcibly() }
-    override suspend fun awaitExit(): Int = withContext(Dispatchers.IO) { process.waitFor() }
+
+    // Interruptible, so cancelling the collector releases the IO thread instead of parking it in waitFor().
+    override suspend fun awaitExit(): Int = runInterruptible(Dispatchers.IO) { process.waitFor() }
+
+    // A TIMED OS wait: the bound holds however wedged ffmpeg is (cancel's SIGTERM grace relies on it).
+    override suspend fun awaitExit(timeoutMs: Long): Boolean =
+        runInterruptible(Dispatchers.IO) { process.waitFor(timeoutMs, TimeUnit.MILLISECONDS) }
 }
 
 /**

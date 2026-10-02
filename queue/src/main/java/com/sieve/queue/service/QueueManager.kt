@@ -53,6 +53,12 @@ class QueueManager(
     private val onCompleted: suspend (QueueJob) -> Unit = {},
     /** Called once a job lands in FAILED for good (not for a transient auto-retry, a pause or a user cancel). */
     private val onFailed: suspend (QueueJob) -> Unit = {},
+    /**
+     * Called once a transcode job can no longer need its materialized source copy: it completed, was
+     * cancelled by the user, or its row was removed. NOT called when it merely FAILED — Retry re-reads
+     * the same input. Best-effort; the host decides what (if anything) is deletable.
+     */
+    private val releaseSource: suspend (QueueJob) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(initial)
     val state: StateFlow<QueueState> = _state.asStateFlow()
@@ -91,6 +97,8 @@ class QueueManager(
         // A paused job still owns its partial download; cancelling it from PAUSED has no terminal signal
         // to trigger the usual discard.
         if (before?.status == DownloadStatus.PAUSED) cleanupWorkDir(before)
+        // A queued job has no work dir, but it holds a source copy that no terminal signal will release.
+        else if (before?.status == DownloadStatus.QUEUED && _state.value.job(id)?.status == DownloadStatus.CANCELLED) releaseSourceCopy(before)
     }
 
     /** Removes one finished row (completed / failed / cancelled). Live rows are ignored — cancel them first. */
@@ -113,11 +121,25 @@ class QueueManager(
         removed.forEach { cleanupWorkDir(it) }
     }
 
-    /** Best-effort: a failed cleanup must never stop a row from going away. Never touches the saved output. */
+    /**
+     * Best-effort: a failed cleanup must never stop a row from going away. Never touches the saved output.
+     * Used where a job's leftovers are dropped for good (row removed, cancelled from PAUSED), so it also
+     * releases the job's source copy.
+     */
     private suspend fun cleanupWorkDir(job: QueueJob) {
         withContext(NonCancellable) {
             runCatching { output.cleanup(job) }
                 .onFailure { android.util.Log.w("SieveQueue", "work-dir cleanup failed for ${job.id}", it) }
+            releaseSourceCopy(job)
+        }
+    }
+
+    /** Best-effort, and NonCancellable like the other cleanup: the terminal dispatch may be tearing the scope down. */
+    private suspend fun releaseSourceCopy(job: QueueJob) {
+        if (job.spec !is JobSpec.Transcode) return
+        withContext(NonCancellable) {
+            runCatching { releaseSource(job) }
+                .onFailure { android.util.Log.w("SieveQueue", "source release failed for ${job.id}", it) }
         }
     }
     suspend fun retry(id: String) { dispatch(QueueEvent.Retry(id)); drain() }
@@ -243,9 +265,13 @@ class QueueManager(
                     // The COMPLETED dispatch comes right after this (see launchJob), so hand over the job in
                     // its finished form: saved location recorded, status as it is about to be persisted.
                     onCompleted((_state.value.job(job.id) ?: job).copy(status = DownloadStatus.COMPLETED))
+                    releaseSourceCopy(job)
                 }
             }
-            is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) output.discard(job, prepared)
+            is Outcome.Cancelled -> if (signal.outcome.reason == CancelReason.USER_CANCEL) {
+                output.discard(job, prepared)
+                releaseSourceCopy(job)
+            }
             is Outcome.Failed ->
                 if (job.status == DownloadStatus.QUEUED) {
                     // reducer chose auto-retry → schedule a delayed re-drain after the backoff
@@ -293,11 +319,22 @@ class QueueManager(
         )
     }
 
+    /**
+     * The Pause/Cancel is already stamped on the row, so the job ends correctly whether or not the kill
+     * lands: a failure here is logged, never propagated — this runs in fire-and-forget app-scope
+     * launches, where an exception would take the whole process down.
+     */
     private suspend fun killJob(id: String) {
         val job = _state.value.job(id) ?: return
-        when (job.spec) {
-            is JobSpec.Download -> downloadPort.cancel(id)
-            is JobSpec.Transcode -> transcodePort.cancel(id, graceMs = 3000)
+        try {
+            when (job.spec) {
+                is JobSpec.Download -> downloadPort.cancel(id)
+                is JobSpec.Transcode -> transcodePort.cancel(id, graceMs = 3000)
+            }
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            android.util.Log.w("SieveQueue", "kill failed for $id", t)
         }
     }
 }
