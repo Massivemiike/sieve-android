@@ -9,6 +9,7 @@ import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.QueueAggregator
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -78,12 +79,31 @@ class QueueService : Service() {
         }
     }
 
-    /** Android 15 dataSync 6h cap: pause active work and stop; resume on next app open (v1). */
-    override fun onTimeout(startId: Int) {
+    /**
+     * Android 15+ dataSync 6 h cap: pause active work and stop; resume on next app open (v1). From API 35 the platform
+     * reports it HERE, with the service's type; the one-argument overload below is only the API 34 shortService
+     * callback, so without this override the handler never ran and the platform killed the app a few seconds later
+     * (ForegroundServiceDidNotStopInTimeException).
+     */
+    override fun onTimeout(startId: Int, fgsType: Int) { stopForTimeLimit() }
+
+    /** The API 34 shortService callback. This service never runs as one; if it is ever called it means the same. */
+    override fun onTimeout(startId: Int) { stopForTimeLimit() }
+
+    private fun stopForTimeLimit() {
         serviceScope.launch {
-            repo.state.value.jobs.filter { it.status == DownloadStatus.RUNNING }.forEach { repo.pause(it.id) }
+            try {
+                repo.state.value.jobs.filter { it.status == DownloadStatus.RUNNING }.forEach { repo.pause(it.id) }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // The stop below must happen whatever became of the pauses: the platform allows only a few seconds.
+                android.util.Log.e("SieveQueue", "pausing the running work at the time limit failed", t)
+            }
             ServiceCompat.stopForeground(this@QueueService, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf(startId)
+            // Unconditional on purpose: a start request that arrived after the platform's startId would make
+            // stopSelf(startId) a no-op and leave the service running into the platform's exception.
+            stopSelf()
         }
     }
 
