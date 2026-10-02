@@ -61,4 +61,18 @@ class ProducedFilesTest {
         assertTrue(!ProducedFiles.hasMedia(listOf("a.mp4.part", "a.f137.mp4", "a.temp.mp4", "a.ytdl")))   // scratch only
         assertTrue(!ProducedFiles.hasMedia(listOf("a.jpg", "a.webp", "a.en.vtt", "a.srt", "a.info.json")))  // sidecars only
     }
+
+    @Test fun `unmerged streams with non-numeric format ids are scratch`() {
+        // yt-dlp names each stream of a not-yet-merged download "<name>.f<format_id>.<ext>"; ids are not always numeric.
+        assertTrue(ProducedFiles.isScratch("Song [abc].f251-drc.webm"))
+        assertTrue(ProducedFiles.isScratch("Clip [x9].fhls-720p.mp4"))
+        assertTrue(ProducedFiles.isScratch("Reel [1195289147628387].f1415483346858418v.mp4"))
+        assertTrue(ProducedFiles.isScratch("Post [7151].fdash-video_1.mp4"))
+        assertTrue(!ProducedFiles.hasMedia(listOf("A [1].f251-drc.webm", "A [1].fhls-720p.mp4", "A [1].jpg")))
+        // ...but a subtitle language starting with "f" (French, Finnish, Persian) is a real sidecar, and a merged file is media.
+        assertTrue(!ProducedFiles.isScratch("Talk [id].fr.vtt"))
+        assertTrue(!ProducedFiles.isScratch("Talk [id].fa.srt"))
+        assertTrue(!ProducedFiles.isScratch("Me at the zoo [jNQXAC9IVRw].mp4"))
+        assertTrue(ProducedFiles.hasMedia(listOf("A [1].mp4", "A [1].f251-drc.webm")))
+    }
 }
