@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Background layer of the adaptive launcher icon (a lifted near-black, one step above the app's #08090B ground). -->
+    <color name="ic_launcher_background">#101216</color>
+</resources>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sieve launcher icon, direction D "Mesh S" (Claude Design canvas "Sieve App Icon", chosen by the owner 2026-10-02):
+  an amber S traced through a 5 x 5 grid of mesh dots. Adaptive-icon foreground on the 108 dp grid; every mark stays
+  inside the 66 dp safe circle (the corner dots reach 30.9 dp from the centre), so no launcher mask cuts it.
+  The background layer is @color/ic_launcher_background; the themed (Android 13+) layer is ic_launcher_monochrome.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- the mesh: 25 dots, r 2.4, every 10 units from 34 to 74 -->
+    <path
+        android:fillColor="#2C3038"
+        android:pathData="M31.6,34a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M41.6,34a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M51.6,34a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M61.6,34a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M71.6,34a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M31.6,44a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M41.6,44a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M51.6,44a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M61.6,44a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M71.6,44a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M31.6,54a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M41.6,54a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M51.6,54a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M61.6,54a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M71.6,54a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M31.6,64a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M41.6,64a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M51.6,64a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M61.6,64a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M71.6,64a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M31.6,74a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M41.6,74a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M51.6,74a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M61.6,74a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0 M71.6,74a2.4,2.4 0 1,0 4.8,0a2.4,2.4 0 1,0 -4.8,0" />
+    <!-- the S, in Sieve's amber accent -->
+    <path
+        android:strokeColor="#E0A458"
+        android:strokeWidth="6.4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M64,34 H44 L34,44 L44,54 H64 L74,64 L64,74 H44" />
+</vector>
