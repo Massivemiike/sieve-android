@@ -32,6 +32,10 @@ jobs:
           java-version: '17'
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The default also asks for the legacy 'tools' package, which the runner's cmdline-tools 16 no
+          # longer has (sdkmanager exits 1: "Failed to find package 'tools'").
+          packages: platform-tools
 
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
