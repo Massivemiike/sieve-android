@@ -155,36 +155,23 @@ object AppGraph {
     }
 
     /**
-     * Keeps yt-dlp current WITHOUT user action. The bundled binary (youtubedl-android 0.18.1 ships
-     * yt-dlp 2025.11.12) is already too old for YouTube (SABR streaming → downloads fail out of the
-     * box), so a fresh install MUST self-update before it can download. Throttled to once per 12h;
-     * failures are silent (offline first launch just tries again next open, and Settings keeps the
-     * manual Update button).
-     *
-     * The library's updater deletes and recreates the yt-dlp directory IN PLACE, so it must never run
-     * underneath a live download: this first waits (up to 2 h) until no download is PREPARING/RUNNING
-     * and skips the update if that never happens. The 12 h throttle is stamped only when the update
-     * actually succeeded, so a failed or skipped attempt is retried on the next open.
+     * Starts the launch-time yt-dlp update off the main thread (see [YtDlpAutoUpdate] for what it does and why; it also
+     * repairs a version record that outlived its yt-dlp file, which Auto Backup can restore onto a reinstall).
      */
     private fun autoUpdateYtDlp(scope: CoroutineScope) {
         val key = androidx.datastore.preferences.core.longPreferencesKey("ytdlp_auto_updated_at")
-        scope.launch {
-            runCatching {
-                val last = prefs.data.first()[key] ?: 0L
-                if (System.currentTimeMillis() - last < 12 * 60 * 60 * 1000L) return@launch
-                if (!queue.state.awaitNoActiveDownload(timeoutMs = 2 * 60 * 60 * 1000L, settleMs = 5_000L)) {
-                    android.util.Log.i("SieveEngine", "yt-dlp auto-update skipped: downloads still running")
-                    return@launch
-                }
-                val result = engine.doUpdate(com.sieve.engine.update.UpdateChannel.STABLE)
-                if (result.ok) {
-                    prefs.edit { it[key] = System.currentTimeMillis() }
-                    android.util.Log.i("SieveEngine", "yt-dlp auto-update done (now ${engine.version()})")
-                } else {
-                    android.util.Log.w("SieveEngine", "yt-dlp auto-update failed: ${result.output}")
-                }
-            }.onFailure { android.util.Log.w("SieveEngine", "yt-dlp auto-update skipped: ${it.message}") }
-        }
+        val update = YtDlpAutoUpdate(
+            engine = engine,
+            lastUpdatedAt = { prefs.data.first()[key] ?: 0L },
+            stampUpdated = { at -> prefs.edit { it[key] = at } },
+            forgetStamp = { prefs.edit { it.remove(key) } },
+            awaitIdle = {
+                queue.state.awaitNoActiveDownload(
+                    timeoutMs = YtDlpAutoUpdate.IDLE_TIMEOUT_MS, settleMs = YtDlpAutoUpdate.IDLE_SETTLE_MS,
+                )
+            },
+        )
+        scope.launch { update.run() }
     }
 
     /**
