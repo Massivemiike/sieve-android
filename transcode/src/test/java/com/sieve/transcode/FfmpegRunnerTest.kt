@@ -91,7 +91,21 @@ class FfmpegRunnerTest {
         assertTrue(ev.any { it is TranscodeEvent.Log && it.line.contains("retrying on software") })
         assertEquals(2, fac.calls.size)
         assertTrue(fac.calls[1].contains("libx264")) // demoted -c:v
+        assertTrue(fac.calls[1].windowed(2).contains(listOf("-pix_fmt", "yuv420p"))) // and the SW 8-bit 4:2:0 default
         assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+    }
+
+    @Test fun F3b_demotedH264GetsPixFmtButHevcOnlySwapsTheCodec() {
+        // The HW args carry no -pix_fmt (MediaCodec takes nv12); once demoted to libx264 a 10-bit/4:2:2
+        // source would otherwise come out as High10/4:2:2 H.264 that most players reject.
+        assertEquals(
+            listOf("-c:v", "libx264", "-b:v", "6000k", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080", "-c:a", "aac"),
+            FfmpegRunner.demoteToSoftware(listOf("-c:v", "h264_mediacodec", "-b:v", "6000k", "-vf", "scale=-2:1080", "-c:a", "aac")),
+        )
+        assertEquals(
+            listOf("-c:v", "libx265", "-b:v", "3000k", "-tag:v", "hvc1"),
+            FfmpegRunner.demoteToSoftware(listOf("-c:v", "hevc_mediacodec", "-b:v", "3000k", "-tag:v", "hvc1")),
+        )
     }
 
     @Test fun F4_nonHwFailureNoRetry() = runTest {

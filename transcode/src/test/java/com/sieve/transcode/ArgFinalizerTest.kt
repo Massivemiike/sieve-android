@@ -229,7 +229,7 @@ class ArgFinalizerTest {
         )
         assertEquals(
             listOf(
-                "-c:v", "libx264", "-crf", "19", "-preset", "medium",
+                "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
                 "-vf", "scale=-2:1080,subtitles='s.srt'",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 "-threads", "16",

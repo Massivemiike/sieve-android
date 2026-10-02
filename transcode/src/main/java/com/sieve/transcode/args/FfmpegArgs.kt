@@ -29,8 +29,20 @@ object EncoderResolver {
  *
  * Unknown / `custom-*` ids return **trim-only** args (the desktop's early return); the `default`
  * ffmpeg case is unreachable because all 52 built-in ids have an explicit arm.
+ *
+ * Documented divergences from the (frozen) table: the DNxHR `-pix_fmt`/`-ar` fixes below; software
+ * H.264 gets `-pix_fmt yuv420p` ([withSoftwarePixFmt]); and the Discord presets derive a video
+ * bitrate from the clip length (the desktop's `discordFitArgs`) — budgeting the TRIMMED length, where
+ * the desktop budgets the whole source.
  */
 object FfmpegArgs {
+
+    /** Share of the Discord size cap the encode targets; the rest is headroom for mux overhead. */
+    private const val DISCORD_BUDGET = 0.92
+    private const val DISCORD_MIN_VIDEO_BPS = 200_000L
+
+    /** Rate-control / speed tokens that sit directly after `-c:v <encoder>` in the arg tables. */
+    private val RATE_CONTROL_FLAGS = setOf("-crf", "-b:v", "-preset", "-maxrate", "-bufsize", "-fs")
 
     fun build(
         presetId: String,
@@ -42,6 +54,11 @@ object FfmpegArgs {
         val out = ArrayList<String>()
         if (trimIn > 0.0) { out += "-ss"; out += floor(trimIn * durationSec).toLong().toString() }
         if (trimOut < 1.0) { out += "-to"; out += floor(trimOut * durationSec).toLong().toString() }
+
+        // Length of the output the -ss/-to above produce (-to is an end timestamp: clip = to - ss).
+        // <= 0 means the duration is unknown, so no duration-derived bitrate can be computed.
+        val clipSec = (if (trimOut < 1.0) floor(trimOut * durationSec) else durationSec) -
+            (if (trimIn > 0.0) floor(trimIn * durationSec) else 0.0)
 
         val v = EncoderResolver.h264(encoder)
         val h = EncoderResolver.hevc(encoder)
@@ -91,8 +108,8 @@ object FfmpegArgs {
             "ig-vert" -> listOf("-c:v", v, "-b:v", "12M", "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
             "ig-square" -> listOf("-c:v", v, "-b:v", "8M", "-vf", "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
             "twitter" -> listOf("-c:v", v, "-b:v", "25M", "-preset", "medium", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "discord-25" -> listOf("-c:v", v, "-fs", "25M", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
-            "discord-8" -> listOf("-c:v", v, "-fs", "8M", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart")
+            "discord-25" -> discordFit(v, 25, 128, clipSec) + listOf("-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
+            "discord-8" -> discordFit(v, 8, 96, clipSec) + listOf("-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart")
             // ── Audio (lead with -vn, no video codec) ────────────────
             "mp3-320" -> listOf("-vn", "-c:a", "libmp3lame", "-b:a", "320k")
             "aac-256" -> listOf("-vn", "-c:a", "aac", "-b:a", "256k")
@@ -119,7 +136,43 @@ object FfmpegArgs {
             else -> null
         }
 
-        if (body != null) out += body
+        if (body != null) out += if (encoder == BuilderEncoder.SOFTWARE) withSoftwarePixFmt(body) else body
         return out
+    }
+
+    /**
+     * Video args of a size-capped (Discord) preset: aim the whole clip under [capMB] by targeting a
+     * bitrate from the clip length, with `-fs` kept only as a safety ceiling (it hard-truncates the
+     * output mid-stream, reported as success). Port of the desktop `discordFitArgs`. With an unknown
+     * length ([clipSec] <= 0) only `-fs` is emitted. `-maxrate`/`-bufsize` constrain libx264; the
+     * MediaCodec wrappers read only `-b:v`, which is why it is always emitted alongside.
+     */
+    private fun discordFit(video: String, capMB: Int, audioKbps: Int, clipSec: Double): List<String> {
+        val args = arrayListOf("-c:v", video)
+        if (clipSec > 0.0) {
+            val budgetBits = capMB * 1024 * 1024 * 8 * DISCORD_BUDGET
+            val vbps = maxOf(DISCORD_MIN_VIDEO_BPS, floor(budgetBits / clipSec).toLong() - audioKbps * 1000L)
+            args += listOf("-b:v", vbps.toString(), "-maxrate", vbps.toString(), "-bufsize", (vbps * 2).toString())
+        }
+        args += listOf("-fs", "${capMB}M")
+        return args
+    }
+
+    /**
+     * Pin software H.264 to 8-bit 4:2:0 (`-pix_fmt yuv420p`), as the desktop does for every CPU
+     * encode. Without it libx264 keeps the source's format, so a 10-bit HDR or 4:2:2 phone clip
+     * becomes High10/4:2:2 H.264 that iOS, most TVs and social uploads refuse to play.
+     *
+     * Inserted straight after the encoder's rate-control/`-preset` tokens (the desktop order); a no-op
+     * for any other codec or when the args already carry a `-pix_fmt`. Software only: MediaCodec
+     * encoders accept nv12/mediacodec frames, so HARDWARE args are left alone — except after a
+     * MediaCodec → libx264 demotion, which re-applies this.
+     */
+    fun withSoftwarePixFmt(args: List<String>): List<String> {
+        val c = args.indexOf("-c:v")
+        if (c < 0 || args.getOrNull(c + 1) != "libx264" || "-pix_fmt" in args) return args
+        var i = c + 2
+        while (i + 1 < args.size && args[i] in RATE_CONTROL_FLAGS) i += 2
+        return args.subList(0, i) + listOf("-pix_fmt", "yuv420p") + args.subList(i, args.size)
     }
 }

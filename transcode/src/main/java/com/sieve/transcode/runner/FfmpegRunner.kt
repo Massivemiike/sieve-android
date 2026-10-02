@@ -1,5 +1,6 @@
 package com.sieve.transcode.runner
 
+import com.sieve.transcode.args.FfmpegArgs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.launch
@@ -91,7 +92,8 @@ class FfmpegRunner(
             listOf("-y", "-progress", "pipe:1") + job.inputArgs + listOf("-i", job.inputPath) + job.presetArgs + listOf(job.outputPath)
 
         /**
-         * Swap the video codec token after `-c:v` from MediaCodec to its software counterpart.
+         * Swap the video codec token after `-c:v` from MediaCodec to its software counterpart (and, for
+         * libx264, pin 8-bit 4:2:0 — the HW args carry no `-pix_fmt`, see [FfmpegArgs.withSoftwarePixFmt]).
          *
          * Codec swap only, per plan. Re-applying an explicit `-threads` cap after demotion
          * (invariant #16) needs the requested-thread count, which [TranscodeJob] does not carry; the
@@ -107,7 +109,7 @@ class FfmpegRunner(
                 "hevc_mediacodec" -> "libx265"
                 else -> out[cIdx + 1]
             }
-            return out
+            return FfmpegArgs.withSoftwarePixFmt(out)
         }
     }
 }

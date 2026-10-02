@@ -25,8 +25,9 @@ class FfmpegArgsTest {
 
     // ── Task 4: representative byte-exact vectors, one per shape ─────
     @Test fun h264_1080_software() {
+        // -pix_fmt yuv420p right after the rate-control/-preset tokens (desktop encoderMap order).
         assertEquals(
-            listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
             FfmpegArgs.build("h264-1080", SOFTWARE),
         )
@@ -44,7 +45,7 @@ class FfmpegArgsTest {
         val args = FfmpegArgs.build("h264-4k", SOFTWARE)
         assertEquals(
             listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-maxrate", "35M", "-bufsize", "70M",
-                "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
+                "-pix_fmt", "yuv420p", "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
             args,
         )
         // token-order invariant: -maxrate/-bufsize come before -vf
@@ -130,7 +131,7 @@ class FfmpegArgsTest {
     @Test fun yt1080_useBitrateAndPresetSlow_presetPrecedesVf() {
         val args = FfmpegArgs.build("yt-1080", SOFTWARE)
         assertEquals(
-            listOf("-c:v", "libx264", "-b:v", "12M", "-preset", "slow", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx264", "-b:v", "12M", "-preset", "slow", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
                 "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
             args,
         )
@@ -139,18 +140,123 @@ class FfmpegArgsTest {
 
     @Test fun igVert_padFilterIsVerbatim() {
         assertEquals(
-            listOf("-c:v", "libx264", "-b:v", "12M", "-vf",
+            listOf("-c:v", "libx264", "-b:v", "12M", "-pix_fmt", "yuv420p", "-vf",
                 "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
             FfmpegArgs.build("ig-vert", SOFTWARE),
         )
     }
 
-    @Test fun discord25_usesFsCap() {
+    // ── Discord size caps: fit the WHOLE clip; -fs is only a safety ceiling ──
+    @Test fun discord25_unknownDuration_fallsBackToFsCapOnly() {
+        // durationSec <= 0 → no bitrate can be derived; keep the -fs ceiling (desktop discordFitArgs parity).
         assertEquals(
-            listOf("-c:v", "libx264", "-fs", "25M", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"),
+            listOf("-c:v", "libx264", "-fs", "25M", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"),
             FfmpegArgs.build("discord-25", SOFTWARE),
         )
+        assertEquals(
+            FfmpegArgs.build("discord-25", SOFTWARE),
+            FfmpegArgs.build("discord-25", SOFTWARE, durationSec = -1.0),
+        )
+    }
+
+    @Test fun discord25_knownDuration_targetsABitrateThatFitsTheCap() {
+        // 25 MiB * 8 * 0.92 / 240 s = 803908 bps total, minus 128 kbps audio = 675908 bps of video.
+        assertEquals(
+            listOf("-c:v", "libx264", "-b:v", "675908", "-maxrate", "675908", "-bufsize", "1351816", "-fs", "25M",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-25", SOFTWARE, durationSec = 240.0),
+        )
+    }
+
+    @Test fun discord8_knownDuration_usesTheSmallerBudgetAndAudio() {
+        // 8 MiB * 8 * 0.92 / 60 s = 1029002 bps total, minus 96 kbps audio = 933002 bps of video.
+        assertEquals(
+            listOf("-c:v", "libx264", "-b:v", "933002", "-maxrate", "933002", "-bufsize", "1866004", "-fs", "8M",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-8", SOFTWARE, durationSec = 60.0),
+        )
+    }
+
+    @Test fun discord_videoBitrateFloorsAt200kbps() {
+        // 8 MiB over 4 minutes leaves only 161250 bps of video → clamped to the 200 kbps floor.
+        val args = FfmpegArgs.build("discord-8", SOFTWARE, durationSec = 240.0)
+        assertEquals("200000", args[args.indexOf("-b:v") + 1])
+        assertEquals("200000", args[args.indexOf("-maxrate") + 1])
+        assertEquals("400000", args[args.indexOf("-bufsize") + 1])
+    }
+
+    @Test fun discord_hardwareGetsTheSameRateControlAndNoPixFmt() {
+        // MediaCodec only consumes -b:v; the sanitizer leaves it alone because -b:v is already present.
+        assertEquals(
+            listOf("-c:v", "h264_mediacodec", "-b:v", "933002", "-maxrate", "933002", "-bufsize", "1866004", "-fs", "8M",
+                "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart"),
+            FfmpegArgs.build("discord-8", HARDWARE, durationSec = 60.0),
+        )
+    }
+
+    @Test fun discord_budgetUsesTheTrimmedLengthNotTheWholeSource() {
+        // trim 25%..75% of 400 s → -ss 100 -to 300 → a 200 s output: 192937984 bits / 200 s = 964689 bps,
+        // minus 128 kbps audio = 836689. (Divergence from the desktop, which budgets the untrimmed length.)
+        val args = FfmpegArgs.build("discord-25", SOFTWARE, trimIn = 0.25, trimOut = 0.75, durationSec = 400.0)
+        assertEquals(listOf("-ss", "100", "-to", "300", "-c:v", "libx264", "-b:v", "836689"), args.take(8))
+    }
+
+    @Test fun discord_estimatedSizeStaysUnderTheCapForTypicalDurations() {
+        for ((id, capMiB, audioBps) in listOf(Triple("discord-25", 25, 128_000), Triple("discord-8", 8, 96_000))) {
+            for (sec in listOf(5, 30, 60, 120, 300, 600)) {
+                val args = FfmpegArgs.build(id, SOFTWARE, durationSec = sec.toDouble())
+                val vbps = args[args.indexOf("-b:v") + 1].toLong()
+                if (vbps == 200_000L) continue // floored: the -fs ceiling is the only guard, by design
+                val bytes = (vbps + audioBps) * sec / 8.0
+                assertTrue("$id ${sec}s estimated $bytes B exceeds the cap", bytes <= capMiB * 1024.0 * 1024.0)
+            }
+        }
+    }
+
+    // ── 8-bit 4:2:0 for software H.264 (broad playback) ─────────────
+    private fun videoCodecOf(args: List<String>): String? = args.indexOf("-c:v").let { if (it >= 0) args[it + 1] else null }
+
+    @Test fun everySoftwareH264PresetForces8bit420PixFmt() {
+        // A 10-bit / 4:2:2 / 4:4:4 source otherwise yields High10/4:2:2 H.264 that iOS, TVs and uploads reject.
+        val h264 = TranscodePresets.all.filter { videoCodecOf(FfmpegArgs.build(it.id, SOFTWARE)) == "libx264" }
+        assertEquals(19, h264.size)
+        for (p in h264) {
+            val args = FfmpegArgs.build(p.id, SOFTWARE)
+            assertEquals("${p.id} must carry exactly one -pix_fmt", 1, args.count { it == "-pix_fmt" })
+            assertEquals("${p.id}", "yuv420p", args[args.indexOf("-pix_fmt") + 1])
+        }
+    }
+
+    @Test fun pixFmtSitsAfterTheRateControlBlockAndBeforeTheRest() {
+        assertEquals(
+            listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p",
+                "-profile:v", "high", "-level", "4.2", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
+            FfmpegArgs.build("plex-direct", SOFTWARE),
+        )
+        // no rate-control tokens at all → straight after the codec
+        assertEquals(
+            listOf("-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
+                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
+            FfmpegArgs.build("apple-iphone", SOFTWARE),
+        )
+    }
+
+    @Test fun hardwareH264PresetsNeverCarryPixFmt() {
+        // h264_mediacodec only accepts nv12/mediacodec frames; a forced yuv420p just triggers a reformat/failure.
+        for (p in TranscodePresets.all) {
+            val args = FfmpegArgs.build(p.id, HARDWARE)
+            if (videoCodecOf(args) == "h264_mediacodec") assertTrue("${p.id} (HW) must not force -pix_fmt", "-pix_fmt" !in args)
+        }
+    }
+
+    @Test fun withSoftwarePixFmt_isIdempotentAndLeavesOtherCodecsAlone() {
+        val sw = FfmpegArgs.build("h264-1080", SOFTWARE)
+        assertEquals(sw, FfmpegArgs.withSoftwarePixFmt(sw))
+        val hevc = FfmpegArgs.build("h265-1080", SOFTWARE)
+        assertEquals(hevc, FfmpegArgs.withSoftwarePixFmt(hevc))
+        val audio = FfmpegArgs.build("mp3-320", SOFTWARE)
+        assertEquals(audio, FfmpegArgs.withSoftwarePixFmt(audio))
     }
 
     @Test fun audioPresetsLeadWithVn_noVideoCodec() {
