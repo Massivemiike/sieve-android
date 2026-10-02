@@ -12,7 +12,15 @@ interface FfmpegProcess {
     val stdout: Flow<String>
     val stderr: Flow<String>
     suspend fun writeStdin(text: String)
+
+    /** SIGTERM. A catchable request: ffmpeg only sets a flag, and a native codec call that never returns ignores it. */
     fun destroy()
+
+    /**
+     * SIGKILL: the one stop a wedged process cannot ignore, which is what cancel and the stall watchdog finally rely on.
+     * An implementation must really deliver it. On Android `java.lang.Process` cannot (see `AndroidFfmpegProcess`):
+     * there `destroyForcibly()` is `destroy()`, i.e. SIGTERM again.
+     */
     fun destroyForcibly()
     suspend fun awaitExit(): Int
 

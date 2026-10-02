@@ -33,6 +33,7 @@ private class FakeProc(stdout: List<String> = emptyList()) : FfmpegProcess {
     val exit = CompletableDeferred<Int>()
     val stdinWrites = mutableListOf<String>()
     var destroyed = 0
+    var killed = 0
     var stdinFailure: IOException? = null
     override val stdout: Flow<String> = stdout.asFlow()
     override val stderr: Flow<String> = emptyList<String>().asFlow()
@@ -42,19 +43,44 @@ private class FakeProc(stdout: List<String> = emptyList()) : FfmpegProcess {
         exit.complete(0)
     }
     override fun destroy() { destroyed++; exit.complete(143) }
-    override fun destroyForcibly() { exit.complete(137) }
+    override fun destroyForcibly() { killed++; exit.complete(137) }
+    override suspend fun awaitExit(): Int = exit.await()
+}
+
+/**
+ * The S26 hang: ffmpeg alive but wedged in a native MediaCodec call. It ignores `q` and SIGTERM and only SIGKILL
+ * ([destroyForcibly]) ends it. [deathCode] 134 is the SIGABRT the decoder thread died of there.
+ */
+private class WedgedProc(private val deathCode: Int = 137) : FfmpegProcess {
+    val exit = CompletableDeferred<Int>()
+    val stdinWrites = mutableListOf<String>()
+    var destroyed = 0
+    var killed = 0
+    override val stdout: Flow<String> = emptyList<String>().asFlow()
+    override val stderr: Flow<String> = emptyList<String>().asFlow()
+    override suspend fun writeStdin(text: String) { stdinWrites.add(text) }
+    override fun destroy() { destroyed++ }
+    override fun destroyForcibly() { killed++; exit.complete(deathCode) }
     override suspend fun awaitExit(): Int = exit.await()
 }
 
 private class RecordingFactory(private val stdout: List<String> = emptyList(), private val onStart: () -> Unit = {}) : FfmpegProcessFactory {
     /** Keyed by the `-i` input path, so a test can tell which job's process is which. */
     val spawned = ConcurrentHashMap<String, FakeProc>()
+    val starts = java.util.concurrent.atomic.AtomicInteger()
     override fun start(binaryPath: String, args: List<String>): FfmpegProcess {
         onStart()
+        starts.incrementAndGet()
         val p = FakeProc(stdout)
         spawned[args[args.indexOf("-i") + 1]] = p
         return p
     }
+}
+
+/** Hands out one [WedgedProc] per start. */
+private class WedgedFactory(private val deathCode: Int = 137) : FfmpegProcessFactory {
+    val procs = java.util.concurrent.CopyOnWriteArrayList<WedgedProc>()
+    override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode).also { procs += it }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -115,9 +141,59 @@ class RealTranscodePortTest {
         val events = p.run("A", job("/a")).toList()
 
         val proc = factory.spawned["/a"]!!
-        assertEquals(1, proc.destroyed)
+        // SIGKILL, not SIGTERM: nothing of a cancelled run is kept, and a wedged codec ignores SIGTERM.
+        assertEquals(1, proc.killed)
+        assertEquals(0, proc.destroyed)
         assertTrue(proc.stdinWrites.isEmpty())
-        assertEquals(143, (events.last() as TranscodeEvent.Done).exitCode)
+        assertEquals(137, (events.last() as TranscodeEvent.Done).exitCode)
+    }
+
+    // The S26 hang: the FIRST Cancel tap did nothing, the second ended it. One cancel must be enough, and the run must report it.
+    @Test fun `one cancel ends a wedged ffmpeg that ignores q and SIGTERM, and the run ends with it`() = runTest(timeout = 20.seconds) {
+        val factory = WedgedFactory()
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val events = async { p.run("A", job("/a")).toList() }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }
+        val proc = factory.procs.single()
+
+        p.cancel("A", graceMs = 3_000) // what QueueManager.killJob sends; its grace runs on the virtual clock here
+
+        assertEquals(listOf("q"), proc.stdinWrites)
+        assertEquals(1, proc.destroyed)
+        assertEquals(1, proc.killed)
+        assertEquals(137, (events.await().last() as TranscodeEvent.Done).exitCode)
+        assertEquals("one process, no respawn", 1, factory.procs.size)
+    }
+
+    // A cancelled hung ffmpeg dies of SIGABRT in its decoder thread (seen on the S26). That is the cancel, not "the hardware crashed".
+    @Test fun `a cancelled hardware run that dies of SIGABRT is not retried on the CPU`() = runTest(timeout = 20.seconds) {
+        val factory = WedgedFactory(deathCode = 134)
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async { p.run("A", hw).toList() }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }
+
+        p.cancel("A", graceMs = 50)
+
+        val done = events.await().last() as TranscodeEvent.Done
+        assertEquals(134, done.exitCode)
+        assertEquals(1, factory.procs.size)
+    }
+
+    // The same exit code on a run nobody stopped IS the hardware crashing: the CPU path takes over, once.
+    @Test fun `a hardware run that crashes by itself is retried on the CPU`() = runTest(timeout = 20.seconds) {
+        val factory = WedgedFactory()
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async { p.run("A", hw).toList() }
+        withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }
+        factory.procs[0].exit.complete(134)
+        withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.size < 2) delay(10) } }
+        factory.procs[1].exit.complete(0)
+
+        val ev = events.await()
+        assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+        assertTrue(ev.filterIsInstance<TranscodeEvent.Log>().single().line.startsWith("Hardware codec crashed, retrying"))
     }
 
     @Test fun `cancel on a process whose stdin is already closed does not throw`() = runTest(timeout = 20.seconds) {

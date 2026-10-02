@@ -118,3 +118,17 @@ class RetryClassifierExitTest {
         assertEquals(RetryClass.TRANSIENT, c)
     }
 }
+
+/** The stall watchdog's verdict (`FfmpegRunner.STALL_SUMMARY`) is final, whatever else the tail of a hung run holds. */
+class RetryClassifierStallTest {
+    private val stalled = "ffmpeg stopped making progress"
+
+    @Test fun `a stalled transcode is permanent`() {
+        assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(FailureInfo(stalled, exitCode = 124, stderrTail = null), JobKind.TRANSCODE))
+    }
+
+    @Test fun `a stray transient-looking word in the tail of a hung run does not make it retry`() {
+        val tail = "[av1_mediacodec @ 0x7b] connection to the codec service timed out\nCodec2 component died: network"
+        assertEquals(RetryClass.PERMANENT, RetryClassifier.classify(FailureInfo(stalled, exitCode = 124, stderrTail = tail), JobKind.TRANSCODE))
+    }
+}

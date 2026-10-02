@@ -79,13 +79,16 @@ class RealTranscodePort internal constructor(
                     val p = delegate.start(binaryPath, args)
                     run.process = p
                     // Cancel/Pause that slipped in between the check above and now (or in the HW->SW retry
-                    // gap) saw no process to stop: stop this one rather than let a cancelled job finish.
-                    if (run.cancelRequested) p.destroy()
+                    // gap) saw no process to stop: stop this one rather than let a cancelled job finish. SIGKILL,
+                    // not SIGTERM: nothing of a cancelled run is kept, and a wedged codec ignores SIGTERM.
+                    if (run.cancelRequested) p.destroyForcibly()
                     return p
                 }
             }
             emitAll(
-                FfmpegRunner(factory, binaryPath).run(adapted).onEach { ev ->
+                // A run that was asked to stop is not "a hardware failure": however it dies (a cancelled hung ffmpeg dies
+                // with SIGABRT as often as not) it must not be retried on the CPU.
+                FfmpegRunner(factory, binaryPath).run(adapted, stopRequested = { run.cancelRequested }).onEach { ev ->
                     // The process is gone once Done is out. Forget it BEFORE the collector sees Done, because
                     // the job stays RUNNING while its output is copied to storage — a Cancel/Pause in that
                     // window must find nothing to kill rather than a dead process.

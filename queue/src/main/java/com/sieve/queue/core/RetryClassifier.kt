@@ -27,7 +27,9 @@ object RetryClassifier {
 
     private val PERMANENT = Regex(
         "403|404|private|not available|Requested format is not available|your country|geo|" +
-            "Sign in|login|\\bage\\b|Unsupported|Unknown encoder|unsupported codec|Invalid argument",
+            "Sign in|login|\\bage\\b|Unsupported|Unknown encoder|unsupported codec|Invalid argument|" +
+            // The watchdog's own verdict (FfmpegRunner.STALL_SUMMARY): a run that hung is not "transient" because its tail has a stray "timed out" in it.
+            "stopped making progress",
         RegexOption.IGNORE_CASE,
     )
 
