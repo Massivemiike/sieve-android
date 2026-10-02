@@ -62,6 +62,7 @@ class QueueRepository private constructor(
      * Loads the persisted queue (once), then wakes the service when it brought back work to do — the
      * downloads a killed process left unfinished. That start can be refused when the process was spawned
      * in the background (Android 12+); the work then simply waits for the next enqueue or app open.
+     * The one-time first restore brings unfinished work back paused (see [QueueManager.rehydrate]), so it wakes nothing.
      */
     suspend fun rehydrate() {
         manager.rehydrate()

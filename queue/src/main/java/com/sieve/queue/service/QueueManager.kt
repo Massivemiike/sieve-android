@@ -148,6 +148,7 @@ class QueueManager(
      * screen rotation. Always 0 on a launch that did not migrate.
      */
     fun consumeRestoreNotice(): Int = restoreNotice.getAndSet(0)
+
     suspend fun cancel(id: String) {
         val before = _state.value.job(id)
         val wasRunning = before?.status.let { it == DownloadStatus.RUNNING || it == DownloadStatus.PREPARING }
