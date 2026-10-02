@@ -96,6 +96,8 @@ ANDROID_HOME=/opt/android-sdk ./gradlew --no-daemon :queue:testDebugUnitTest
 
 > **Tip:** Always confirm `BUILD SUCCESSFUL` and explicit test counts. Piping Gradle through `grep` masks its exit code.
 
+> **SDK:** every module compiles against Android 17 (`platforms;android-37.0`, build-tools `37.0.0`) on JDK 17, and `release.yml` installs exactly those. What moved with it, the Android 16 / 17 behaviour-change decisions and the device checks still owed are in [docs/SDK-37.md](docs/SDK-37.md).
+
 The self-built FFmpeg build script lives at `transcode/build-ffmpeg/ffbuild.sh`.
 
 ---
