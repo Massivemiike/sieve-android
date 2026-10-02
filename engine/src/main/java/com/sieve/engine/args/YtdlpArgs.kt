@@ -54,9 +54,12 @@ object YtdlpArgs {
             }
         }
         // 9 speed limit ("0" and "" unset)
-        if (!opts.speedLimit.isNullOrEmpty() && opts.speedLimit != "0") { args += "--limit-rate"; args += opts.speedLimit }
-        // 10 concurrent fragments (>1)
-        if (settings.concurrentFragments > 1) { args += "-N"; args += settings.concurrentFragments.toString() }
+        val limited = !opts.speedLimit.isNullOrEmpty() && opts.speedLimit != "0"
+        if (limited) { args += "--limit-rate"; args += opts.speedLimit!! }
+        // 10 concurrent fragments (>1). yt-dlp throttles each fragment download on its own, so N parallel
+        // fragments run at N x the limit (measured: 500K -> ~1.2 MiB/s on HLS with -N 4). A limit wins.
+        // (Divergence from the desktop args, which still have that bug.)
+        if (settings.concurrentFragments > 1 && !limited) { args += "-N"; args += settings.concurrentFragments.toString() }
         // 11 proxy
         if (settings.proxy.isNotEmpty()) { args += "--proxy"; args += settings.proxy }
         // 12 cookies from browser

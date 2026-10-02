@@ -207,11 +207,12 @@ class DownloadViewModelTest {
             ),
             speed = "2M",
         )
-        // ...extras, toggles, then speed -> fragments -> proxy -> cookies -> user agent (YtdlpArgs.build order)
+        // ...extras, toggles, then speed -> proxy -> cookies -> user agent (YtdlpArgs.build order). A speed limit
+        // drops -N: yt-dlp throttles each parallel fragment separately, so the limit would not hold.
         val tail = args.subList(args.indexOf("--embed-thumbnail") + 1, args.size)
         assertEquals(
             listOf(
-                "--limit-rate", "2M", "-N", "4", "--proxy", "socks5://127.0.0.1:1080",
+                "--limit-rate", "2M", "--proxy", "socks5://127.0.0.1:1080",
                 "--cookies", "/data/user/0/app/files/cookies.txt", "--user-agent", "Mozilla/5.0 Test",
             ),
             tail,

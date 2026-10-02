@@ -37,16 +37,26 @@ class YtdlpArgsTest {
             "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
             "-x", "--audio-format", "mp3",                       // preset extras
             "--embed-metadata", "--embed-thumbnail",            // toggles
-            "--limit-rate", "2M", "-N", "4",                     // speed limit, then fragments
+            "-N", "4",                                           // fragments
         ),
         YtdlpArgs.build(
             DownloadArgsOptions(
                 format = "bestaudio/best", extraArgs = listOf("-x", "--audio-format", "mp3"),
-                toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES, audioOnly = true, speedLimit = "2M",
+                toggleOpts = DownloadArgsOptions.DEFAULT_TOGGLES, audioOnly = true,
             ),
             EngineSettings(concurrentFragments = EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS),
         ),
     )
+
+    @Test fun aSpeedLimitDropsParallelFragmentsSoTheLimitHolds() {
+        // yt-dlp throttles each fragment download separately: -N 4 with --limit-rate 500K ran at ~1.2 MiB/s on HLS.
+        val args = YtdlpArgs.build(
+            DownloadArgsOptions(format = "best", speedLimit = "500K"),
+            EngineSettings(concurrentFragments = EngineSettings.DEFAULT_CONCURRENT_FRAGMENTS),
+        )
+        assertEquals("500K", args[args.indexOf("--limit-rate") + 1])
+        assertFalse(args.contains("-N"))
+    }
 
     @Test fun defaultTogglesNeverDuplicateAFlagAPresetAlreadyCarries() {
         val out = YtdlpArgs.build(
