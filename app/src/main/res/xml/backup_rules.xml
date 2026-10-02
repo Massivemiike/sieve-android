@@ -8,6 +8,9 @@
                               and a Storage Access Framework grant that means nothing on another phone
        - sieve.db             the queue; each row's engine args carry the proxy (with its credentials) and the cookies path
        - work/, output/       half-downloaded and finished media (far over the 25 MB backup cap)
+       - external updates/    the self-update APK (getExternalFilesDir(null)/updates, tens of MB). Not secret, but Auto
+                              Backup includes the "external" domain by default and one file over the 25 MB quota
+                              makes the whole app backup be skipped
      (The Python runtime lives in noBackupFilesDir and is never backed up.) -->
 <full-backup-content>
     <exclude domain="file" path="cookies.txt" />
@@ -20,4 +23,5 @@
     <exclude domain="database" path="sieve.db-wal" />
     <exclude domain="database" path="sieve.db-shm" />
     <exclude domain="database" path="sieve.db-journal" />
+    <exclude domain="external" path="updates" />
 </full-backup-content>

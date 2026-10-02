@@ -46,6 +46,9 @@ class BackupRulesTest {
         "database/sieve.db-wal",
         "database/sieve.db-shm",
         "database/sieve.db-journal",
+        // The self-update APK (tens of MB) in getExternalFilesDir(null)/updates: Auto Backup includes the
+        // "external" domain by default, and one over the 25 MB quota makes the whole backup be skipped.
+        "external/updates",
     )
 
     @Test fun theManifestPointsAtBothRuleFiles() {
@@ -83,5 +86,8 @@ class BackupRulesTest {
         val graph = File("src/main/java/com/sieve/app/di/AppGraph.kt").readText()
         assertTrue("\"sieve.preferences_pb\"" in graph, "AppGraph no longer names the DataStore file sieve.preferences_pb; update the backup rules")
         assertTrue("\"sieve.db\"" in graph, "AppGraph no longer names the database sieve.db; update the backup rules")
+        // ...and the same for the update APK's folder.
+        val downloader = File("src/main/java/com/sieve/app/update/ApkDownloader.kt").readText()
+        assertTrue("getExternalFilesDir(null), \"updates\"" in downloader, "ApkDownloader no longer writes to external files/updates; update the backup rules")
     }
 }
