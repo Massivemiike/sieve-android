@@ -16,6 +16,7 @@ sealed interface AnalyzeOutcome {
  * terminating with exactly one of Completed/Failed/Cancelled. `cancel(id)` uses
  * the same processId the queue assigned; the id is stable across pause→resume→cancel.
  * checkUpdate compares against GitHub and NEVER applies; doUpdate applies via the library.
+ * [repairVersionRecord] heals a record that outlived its yt-dlp file (see there); [doUpdate] runs it first itself.
  *
  * `analyze`'s [cookiesFile] is a real, readable path to a Netscape cookies.txt. It is anonymous-first:
  * the file is only tried (once) when the anonymous attempt fails because the site wants a login, so
@@ -36,4 +37,13 @@ interface YtDlpEngine {
     suspend fun version(): String?
     suspend fun checkUpdate(): UpdateCheck
     suspend fun doUpdate(channel: UpdateChannel = UpdateChannel.STABLE): UpdateResult
+
+    /**
+     * The library's updater says "up to date" whenever GitHub's latest tag equals its own record of the yt-dlp it
+     * downloaded, without looking at the yt-dlp file. When that record is NEWER than the file that will run (Auto
+     * Backup restored the prefs but not the engine files on a reinstall; a failed update put the bundled yt-dlp
+     * back), this forgets the record so the next [doUpdate] downloads. True when it repaired something. Cheap and
+     * safe next to running downloads; call it before deciding whether an update is due.
+     */
+    suspend fun repairVersionRecord(): Boolean = false
 }

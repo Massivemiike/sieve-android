@@ -392,8 +392,19 @@ class YtDlpEngineImpl(
         UpdateCheck(VersionCompare.isNewer(latest, current), latest, current)
     }
 
+    override suspend fun repairVersionRecord(): Boolean = withContext(io) {
+        // The read side: the repair only reads the yt-dlp file and edits prefs, so it may sit beside downloads but not beside an update.
+        runCatching { engineFiles.read { client.repairVersionRecord() } }.getOrNull() != null
+    }
+
     override suspend fun doUpdate(channel: UpdateChannel): UpdateResult = withContext(io) {
-        runCatching { engineFiles.write { client.update(channel == UpdateChannel.NIGHTLY) } }
+        runCatching {
+            engineFiles.write {
+                // Whoever asks (the launch-time auto-update, Settings > Update): the library would answer "up to date" to a stale record.
+                client.repairVersionRecord()
+                client.update(channel == UpdateChannel.NIGHTLY)
+            }
+        }
             .fold(
                 onSuccess = { UpdateResult(true, it) },
                 onFailure = { UpdateResult(false, it.message ?: "update failed") },
