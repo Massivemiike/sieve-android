@@ -34,8 +34,12 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           # The default also asks for the legacy 'tools' package, which the runner's cmdline-tools 16 no
-          # longer has (sdkmanager exits 1: "Failed to find package 'tools'").
-          packages: platform-tools
+          # longer has (sdkmanager exits 1: "Failed to find package 'tools'"). The platform and build-tools the
+          # modules compile against are named explicitly: compileSdk and buildToolsVersion are 37 / 37.0.0 in every module
+          # (SdkLevelsTest keeps them equal to these ids). AGP would download them on its own, but an explicit install is
+          # deterministic. The platform id is 'android-37.0'; there is no 'android-37'. Gradle's JDK stays 17 (AGP 9.4.1 needs 17
+          # or newer); Robolectric emulates SDK 35 because SDK 36 and 37 need JDK 21 (docs/SDK-37.md).
+          packages: platform-tools platforms;android-37.0 build-tools;37.0.0
 
       - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
