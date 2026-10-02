@@ -63,7 +63,7 @@ class QueueManagerHungTranscodeTest {
     @Test fun `the first Cancel tap on a hung hardware transcode ends the row CANCELLED, frees the slot and lets the service stop`() =
         runTest(timeout = 30.seconds) {
             val factory = StuckFactory()
-            val port = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+            val port = RealTranscodePort("/lib/libsieveffmpeg.so", factory, NO_STALL) { null }
             val dl = FakeDownloadPort()
             val out = FakeOutputProvider()
             val m = QueueManager(JobDriver(dl, port), dl, port, InMemoryPersistence(), out, FakeClock(), initial = QueueState(maxTranscodes = 1))

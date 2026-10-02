@@ -2,6 +2,7 @@ package com.sieve.queue.service
 
 import com.sieve.transcode.runner.FfmpegProcess
 import com.sieve.transcode.runner.FfmpegProcessFactory
+import com.sieve.transcode.runner.FfmpegRunner
 import com.sieve.transcode.runner.TranscodeEvent
 import com.sieve.transcode.runner.TranscodeJob
 import com.sieve.transcode.runner.android.SourceVideoInfo
@@ -83,13 +84,22 @@ private class WedgedFactory(private val deathCode: Int = 137) : FfmpegProcessFac
     override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode).also { procs += it }
 }
 
+/**
+ * These tests wait for the runner's process on a REAL thread (the probe hops to Dispatchers.IO, the polls to Dispatchers.Default)
+ * while `runTest` owns the clock: whenever the test body is suspended, the virtual clock runs ahead, and the runner's stall watchdog
+ * (a virtual-time tick, 120 s of them) can expire before the real thread has answered, which then stops a perfectly healthy fake
+ * process. That showed as two sporadic failures under load ("expected 0 but was 1": a `q` nobody asked for; the HW retry logged
+ * "stopped making progress" instead of "crashed"). Nothing here is about the watchdog (FfmpegRunnerStallTest owns it), so it is off.
+ */
+internal val NO_STALL = FfmpegRunner.Limits(stallTimeoutMs = Long.MAX_VALUE / 4)
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class RealTranscodePortTest {
     private fun job(input: String, durationSec: Double? = null) =
         TranscodeJob(input, "/work/out.mp4", listOf("-c:v", "libx264"), durationSec, false)
 
     private fun port(factory: FfmpegProcessFactory, probe: (String) -> SourceVideoInfo? = { null }) =
-        RealTranscodePort("/lib/libsieveffmpeg.so", factory, probe)
+        RealTranscodePort("/lib/libsieveffmpeg.so", factory, NO_STALL, probe)
 
     /** Real-time wait (the probe runs on real IO threads), not the test's virtual clock. */
     private suspend fun awaitSpawned(factory: RecordingFactory, n: Int) =
@@ -151,7 +161,7 @@ class RealTranscodePortTest {
     // The S26 hang: the FIRST Cancel tap did nothing, the second ended it. One cancel must be enough, and the run must report it.
     @Test fun `one cancel ends a wedged ffmpeg that ignores q and SIGTERM, and the run ends with it`() = runTest(timeout = 20.seconds) {
         val factory = WedgedFactory()
-        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, NO_STALL) { null }
         val events = async { p.run("A", job("/a")).toList() }
         withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }
         val proc = factory.procs.single()
@@ -168,7 +178,7 @@ class RealTranscodePortTest {
     // A cancelled hung ffmpeg dies of SIGABRT in its decoder thread (seen on the S26). That is the cancel, not "the hardware crashed".
     @Test fun `a cancelled hardware run that dies of SIGABRT is not retried on the CPU`() = runTest(timeout = 20.seconds) {
         val factory = WedgedFactory(deathCode = 134)
-        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, NO_STALL) { null }
         val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
         val events = async { p.run("A", hw).toList() }
         withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }
@@ -183,7 +193,7 @@ class RealTranscodePortTest {
     // The same exit code on a run nobody stopped IS the hardware crashing: the CPU path takes over, once.
     @Test fun `a hardware run that crashes by itself is retried on the CPU`() = runTest(timeout = 20.seconds) {
         val factory = WedgedFactory()
-        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory) { null }
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, NO_STALL) { null }
         val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
         val events = async { p.run("A", hw).toList() }
         withContext(Dispatchers.Default) { withTimeout(5_000) { while (factory.procs.isEmpty()) delay(10) } }

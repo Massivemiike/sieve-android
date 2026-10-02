@@ -149,13 +149,21 @@ log guard handles it (it never repeats, about two lines a second).
 ## 7. How this was verified (2026-10-02, WSL, JDK 17, no device)
 
 * **Baseline, measured first on the unchanged RC** (`f8ba443`, Gradle 8.11.1 / AGP 8.7.3): 957 unit tests, all green: engine 224, queue 279, transcode 178, storage 91, data 3, app 182.
-* **After, a full `--rerun-tasks` run** (nothing from the build cache): engine **265**, queue **295**, transcode **225**, storage 91, data 3, app **240** = **1119**, 0 failures.
+* **After, a full `--rerun-tasks` run** (615 of 615 tasks executed, none from the build cache, run on the final commit): engine **265**, queue **295**, transcode **225**, storage 91, data 3, app **240** = **1119**, 0 failures.
   The 162 new tests: `LocalNetworkTest` and `YtdlpErrorsLocalNetworkTest` (+41, :engine); `JobDriverLocalNetworkTest`, `RealTranscodePortTest`, `QueueManagerHungTranscodeTest` and `RetryClassifierStallTest` (+16, :queue);
   `AndroidFfmpegProcessTest` (more cases), `FfmpegRunnerStallTest` and `RunnerLogGuardsTest` (+47, :transcode); `LocalNetworkGateTest`, `LocalNetworkAccessTest`, `HostLookupTest`, `OnLinkNetworksTest`,
   `LocalNetworkPromptTest`, `SnackbarMessagesTest`, `SdkLevelsTest`, `ManifestPermissionsTest` and `NativeLibPackagingTest` (+58, :app).
+* **A flake found by that run, and fixed.** The first no-cache run failed two tests of `RealTranscodePortTest` (an old one, "cancel after the process exited is a no-op", and a new one, "a hardware run that
+  crashes by itself is retried on the CPU"); they passed in 12 isolated repeats and in every earlier run. Cause: those tests wait for the runner's fake process on a *real* thread (the probe hops to
+  `Dispatchers.IO`, the polls to `Dispatchers.Default`) while `runTest` owns the clock, so while the test body is suspended the virtual clock can run ahead and the 120 s stall watchdog expires on a perfectly
+  healthy fake process (a `q` nobody asked for; the retry logged "stopped making progress" instead of "crashed"). Reproduced deterministically by shortening the watchdog to 3 ticks: exactly those assertions fail.
+  The watchdog is production code behaving correctly; the tests were racing it. `RealTranscodePort` has an internal `limits` parameter (production always uses the defaults) and the two test classes that run a fake
+  process under `runTest` there (`RealTranscodePortTest`, `QueueManagerHungTranscodeTest`) switch the stall bound off (`NO_STALL`); `FfmpegRunnerStallTest` still owns the watchdog and is pure virtual time. With the
+  3-tick watchdog those two classes now pass. `feat/full-parity` has the same latent race in its copies of both classes.
 * The six `compileDebugAndroidTestKotlin` tasks, `:app:assembleDebug`, the six `assembleDebugAndroidTest` APKs and `:app:assembleRelease` (unsigned) build.
 * `aapt2 dump badging` (build-tools 37.0.0), release and debug APK: `versionName 1.0.4`, `versionCode 5`, `compileSdkVersion 37` (`platformBuildVersionName 17`), `targetSdkVersion 37`; the merged manifest lists
-  `ACCESS_LOCAL_NETWORK` and `extractNativeLibs=true`. The six androidTest APKs report `targetSdkVersion 37` too.
+  `ACCESS_LOCAL_NETWORK` and `extractNativeLibs=true`. The six androidTest APKs (`:app`, `:engine`, `:data`, `:queue`, `:storage`, `:transcode`) report `targetSdkVersion 37` and `compileSdkVersion 37` too; those of `:app`,
+  `:engine`, `:storage` and `:transcode` carry `extractNativeLibs=true` (`:engine`'s `libpython.zip.so` is deflated, i.e. extracted), `:data` and `:queue` (no native binary loaded by path) the AGP 9 default `false`.
 * Release APK: arm64 only, `zipalign -c -P 16 -v 4` passes, and every ELF in it (`libsieveffmpeg.so`, `libffmpeg.so`, `libffprobe.so`, `libpython.so`, `libqjs.so`, the two androidx libraries) has `LOAD` alignment `0x4000`;
   `libsieveffmpeg.so` is compressed in the APK (the legacy packaging). Unsigned, so no signature check was made.
 * Mutation checks in the lane mirror, each killed (the tests that guard it fail): `destroyForcibly` falling back to SIGTERM; the stall watchdog disabled; `stopRequested` not passed by `RealTranscodePort`;

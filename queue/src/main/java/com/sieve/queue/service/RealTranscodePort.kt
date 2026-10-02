@@ -27,8 +27,13 @@ import java.util.concurrent.ConcurrentHashMap
 class RealTranscodePort internal constructor(
     private val binaryPath: String,
     private val delegate: FfmpegProcessFactory,
+    /** The runner's bounds (stall watchdog, grace periods). Production always uses the defaults; tests that run a fake process under a virtual clock widen the stall bound, see below. */
+    private val limits: FfmpegRunner.Limits,
     private val probe: (String) -> SourceVideoInfo?,
 ) : TranscodePort {
+
+    internal constructor(binaryPath: String, delegate: FfmpegProcessFactory, probe: (String) -> SourceVideoInfo?) :
+        this(binaryPath, delegate, FfmpegRunner.Limits(), probe)
 
     constructor(binaryPath: String) : this(binaryPath, AndroidFfmpegProcessFactory(), SourceProbe::probe)
 
@@ -88,7 +93,7 @@ class RealTranscodePort internal constructor(
             emitAll(
                 // A run that was asked to stop is not "a hardware failure": however it dies (a cancelled hung ffmpeg dies
                 // with SIGABRT as often as not) it must not be retried on the CPU.
-                FfmpegRunner(factory, binaryPath).run(adapted, stopRequested = { run.cancelRequested }).onEach { ev ->
+                FfmpegRunner(factory, binaryPath, limits).run(adapted, stopRequested = { run.cancelRequested }).onEach { ev ->
                     // The process is gone once Done is out. Forget it BEFORE the collector sees Done, because
                     // the job stays RUNNING while its output is copied to storage — a Cancel/Pause in that
                     // window must find nothing to kill rather than a dead process.
