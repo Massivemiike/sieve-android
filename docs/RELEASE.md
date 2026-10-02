@@ -75,12 +75,26 @@ The whole APK is **GPLv3** (it links a self-built full-GPL FFmpeg and youtubedl-
 Before any public APK is distributed, ALL of the following must be true:
 
 - [ ] The app's **complete source** is public (this repo).
-- [ ] The **exact corresponding source** for the bundled FFmpeg + yt-dlp is hosted **on the same
-      site as the APK**, plus a written **3-year offer** for the source.
+- [ ] The **exact corresponding source** for EVERYTHING GPL in the APK is hosted **on the same
+      site as the APK**, plus a written **3-year offer** for the source. That is more than the
+      self-built FFmpeg: `licenses/FFMPEG_SOURCE.txt` Part 2 lists the youtubedl-android 0.18.1 tag,
+      its companion Termux FFmpeg + ~60 libraries, its Termux Python runtime (GNU Readline / GDBM,
+      mutagen), QuickJS and yt-dlp, each with its source URL and SHA-256. Mirror those archives next
+      to the APK (upstream URLs can disappear) or be ready to serve them on request.
+- [ ] When `youtubedl-android` or an `ffbuild.sh` pin changes: update `FFMPEG_SOURCE.txt` (Part 2
+      versions come from the Termux recipes at the commit it names), `ENGINE_NOTICES.txt`, the
+      offer block in `site/index.html` (it repeats the pins, the library tag and the configure line),
+      and run `bash transcode/build-ffmpeg/codec-licenses.sh` (it refuses to run if a pin moved).
+      `LicenseAssetsTest` fails if the offer, the site's copy of it or the codec notice no longer
+      matches the build files.
 - [ ] The FFmpeg `./configure` flags are documented and reproducible (see
       `transcode/build-ffmpeg/ffbuild.sh`) — built **full-gpl**, **never** `--enable-nonfree`.
 - [ ] Full license texts ship **in-app** (Settings → About → Licenses: GPLv3, yt-dlp Unlicense,
-      the FFmpeg source offer, font OFL) **and** on the download page.
+      the written offer for source, the codec-library notices, the engine-component notices, the
+      shared Apache/GPL 2/LGPL/MPL texts, the impersonation notices, font OFL) **and** on the
+      download page.
+- [ ] On a release build, open Settings → About → Licenses and expand every card (each loads a
+      plain-text asset from the APK).
 - [ ] Release/store copy positions Sieve as a **general-purpose downloader** — no
       "YouTube ripper" / "rip to MP3" language.
 - [ ] A fresh legal review immediately before launch (see the spec's legal/risk posture).

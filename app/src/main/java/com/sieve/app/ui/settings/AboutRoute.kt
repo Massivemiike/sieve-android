@@ -76,15 +76,35 @@ fun AboutRoute() {
             item { SectionLabel("License compliance") }
             item {
                 Text(
-                    "Sieve links GPL-licensed components at runtime — a self-built full-GPL FFmpeg and " +
-                        "youtubedl-android (yt-dlp) — so the whole app is licensed under the GNU GPL v3.",
+                    "Sieve ships GPL-licensed components — a self-built full-GPL FFmpeg, and youtubedl-android with " +
+                        "its own FFmpeg and Python runtime — so the whole app is licensed under the GNU GPL v3. " +
+                        "The written offer below names the source of all of it; the other cards hold the notices " +
+                        "each component requires.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             item { LicenseCard("GNU GPL v3 (FFmpeg + youtubedl-android)", "licenses/GPL.txt", "license_gpl") }
             item { LicenseCard("yt-dlp (Unlicense / public domain)", "licenses/YT_DLP_LICENSE.txt", "license_ytdlp") }
-            item { LicenseCard("FFmpeg — written offer for source", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
+            item { LicenseCard("Written offer for source — FFmpeg, youtubedl-android, Python", "licenses/FFMPEG_SOURCE.txt", "license_ffsrc") }
+            item {
+                LicenseCard(
+                    "FFmpeg codec libraries — Opus, libvpx, SVT-AV1, libwebp, LAME",
+                    "licenses/CODEC_LICENSES.txt", "license_codecs",
+                )
+            }
+            item {
+                LicenseCard(
+                    "Engine components — Python, QuickJS, companion FFmpeg libraries",
+                    "licenses/ENGINE_NOTICES.txt", "license_engine",
+                )
+            }
+            item {
+                LicenseCard(
+                    "Other license texts — Apache 2.0, GPL 2, LGPL 2.1 / 3, MPL 2.0",
+                    "licenses/COPYLEFT_TEXTS.txt", "license_other",
+                )
+            }
             item {
                 LicenseCard(
                     "Browser impersonation — curl_cffi, curl-impersonate & bundled libraries",
@@ -122,16 +142,43 @@ private fun LicenseCard(title: String, assetPath: String, tag: String) {
             Icon(Icons.Filled.ExpandMore, contentDescription = null, tint = cs.onSurfaceVariant)
         }
         if (expanded) {
-            val text by produceState(initialValue = "Loading…", assetPath) {
-                value = runCatching { context.assets.open(assetPath).bufferedReader().use { it.readText() } }
-                    .getOrDefault("(license text unavailable)")
+            val chunks by produceState(initialValue = listOf("Loading…"), assetPath) {
+                value = licenseChunks(
+                    runCatching { context.assets.open(assetPath).bufferedReader().use { it.readText() } }
+                        .getOrDefault("(license text unavailable)"),
+                )
             }
-            Text(
-                text,
-                style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFamily),
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(12.dp),
-            )
+            Column(Modifier.fillMaxWidth().heightIn(max = 320.dp).verticalScroll(rememberScrollState()).padding(12.dp)) {
+                val style = MaterialTheme.typography.labelSmall.copy(fontFamily = MonoFamily)
+                for (chunk in chunks) Text(chunk, style = style, color = cs.onSurfaceVariant)
+            }
         }
     }
+}
+
+/** Longest piece [licenseChunks] makes: about 60 lines, ~15,000 px at 2x font scale on a 3x-density phone. */
+internal const val LICENSE_CHUNK_CHARS = 3_000
+
+/**
+ * Cuts [text] between lines into pieces of at most [maxChars] characters (a longer single line stays whole);
+ * joining them with "\n" gives [text] back. The card shows one Text per piece. A single Text holding a whole license
+ * is unbounded in height inside the scrolling card: the 80 KB COPYLEFT_TEXTS.txt is ~3,900 wrapped rows at 2x font
+ * scale, over 300,000 px on a 3x-density phone, past the 262,143 px (2^18 - 1) Compose can represent in a layout
+ * constraint. A Column of pieces has no such limit, because only each piece's own height is ever constrained.
+ */
+internal fun licenseChunks(text: String, maxChars: Int = LICENSE_CHUNK_CHARS): List<String> {
+    val chunks = ArrayList<String>()
+    var lines = ArrayList<String>()
+    var size = 0 // length of lines joined with "\n"
+    for (line in text.split('\n')) {
+        if (lines.isNotEmpty() && size + 1 + line.length > maxChars) {
+            chunks += lines.joinToString("\n")
+            lines = ArrayList()
+            size = 0
+        }
+        size += if (lines.isEmpty()) line.length else 1 + line.length
+        lines += line
+    }
+    chunks += lines.joinToString("\n")
+    return chunks
 }

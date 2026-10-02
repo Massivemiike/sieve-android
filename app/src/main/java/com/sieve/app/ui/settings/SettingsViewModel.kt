@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -28,6 +29,8 @@ data class SettingsUiState(
     val engineVersion: String? = null,
     val updating: Boolean = false,
     val updateMessage: String? = null,
+    /** True when [updateMessage] is a refusal or a failure (shown in the error colour), false for "Engine updated". */
+    val updateMessageIsError: Boolean = false,
     /** The imported cookies.txt, null when none is set. */
     val cookies: CookiesInfo? = null,
     /** Why the last cookies import failed; cleared by the next import or by dismissing it. */
@@ -53,8 +56,10 @@ class SettingsViewModel(
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     init {
-        launch { extra.value = extra.value.copy(engineVersion = engine.version()) }
-        launch { extra.value = extra.value.copy(cookies = withContext(io) { cookiesStore.info() }) }
+        // Each launch computes its value FIRST and then merges it atomically: `extra.value = extra.value.copy(x = suspendingCall())`
+        // reads the receiver before it suspends, so whichever read finished last would overwrite the other's field.
+        launch { val v = engine.version(); extra.update { it.copy(engineVersion = v) } }
+        launch { val c = withContext(io) { cookiesStore.info() }; extra.update { it.copy(cookies = c) } }
     }
 
     fun setThemeMode(m: ThemeMode) = launch { appSettings.setThemeMode(m) }
@@ -99,17 +104,22 @@ class SettingsViewModel(
 
     fun updateEngine() = launch {
         if (downloadActive()) {
-            extra.value = extra.value.copy(updateMessage = UPDATE_BLOCKED_MESSAGE)
+            extra.value = extra.value.copy(updateMessage = UPDATE_BLOCKED_MESSAGE, updateMessageIsError = true)
             return@launch
         }
-        extra.value = extra.value.copy(updating = true, updateMessage = null)
-        // doUpdate() reports failure as UpdateResult(ok = false) rather than throwing.
-        val msg = runCatching { engine.doUpdate() }.fold(
-            onSuccess = { if (it.ok) "Engine updated" else failureMessage(it.output) },
+        extra.value = extra.value.copy(updating = true, updateMessage = null, updateMessageIsError = false)
+        // doUpdate() reports failure as UpdateResult(ok = false) rather than throwing. null = it worked.
+        val failure = runCatching { engine.doUpdate() }.fold(
+            onSuccess = { if (it.ok) null else failureMessage(it.output) },
             onFailure = { failureMessage(it.message) },
         )
-        extra.value = extra.value.copy(updating = false, updateMessage = msg, engineVersion = engine.version())
+        val v = engine.version()
+        extra.update {
+            it.copy(updating = false, updateMessage = failure ?: "Engine updated", updateMessageIsError = failure != null, engineVersion = v)
+        }
     }
+
+    fun dismissUpdateMessage() { extra.value = extra.value.copy(updateMessage = null, updateMessageIsError = false) }
 
     private fun failureMessage(detail: String?): String =
         detail?.trim()?.takeIf { it.isNotEmpty() }?.let { "Update failed: ${it.take(120)}" } ?: "Update failed"

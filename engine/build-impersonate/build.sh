@@ -6,9 +6,17 @@
 # Without curl_cffi, yt-dlp cannot impersonate a browser's TLS fingerprint, and sites that check it
 # (Vimeo's player pages among them) answer 401/403. The desktop yt-dlp.exe bundles curl_cffi.
 #
-# Usage:  bash build.sh            (needs: NDK r29, python3 + venv, curl; run in Linux/WSL)
+# Usage:  bash build.sh            (needs: NDK r29, python3.12 + venv, curl; run in Linux/WSL)
 # Output: engine/src/main/assets/impersonate/{sieve-impersonate.zip,VERSION}
 #         app/src/main/assets/licenses/IMPERSONATE_LICENSES.txt
+#
+# The HOST needs python3.12 exactly: CPython's configure (--with-build-python) refuses a build python of
+# another minor version, so a host whose python3 is 3.13/3.14 must install python3.12 (+ python3.12-venv)
+# or point PYBUILD at one: PYBUILD=/path/to/python3.12 bash build.sh
+#
+# VERSION is the install marker the app compares at startup. It is the pinned component versions plus
+# the SHA-256 of the zip, so rebuilding with the same pins but different output (link flags, a shim
+# patch) still reinstalls on devices that already have the previous bundle.
 #
 # Versions are pinned to what yt-dlp accepts (curl_cffi 0.10-0.16 as of 2026.08.19) and to the
 # Python inside youtubedl-android 0.18.1. Bump PYV / the AAR together when that library moves Python.
@@ -29,6 +37,19 @@ LICENSES=$REPO/app/src/main/assets/licenses/IMPERSONATE_LICENSES.txt
 PYV=3.12.11; FFIV=3.4.8; CURLV=2.2.2; CCFFIV=0.16.3; CFFIV=2.0.0; CERTV=2026.7.22; YTDLAV=0.18.1
 
 fatal() { echo "FATAL: $*" >&2; exit 1; }
+
+# CPython's configure aborts with "incompatible version ... (expected: 3.12)" deep inside the build when
+# the host python is another minor version; say so up front instead.
+PYMM=${PYV%.*}
+PYBUILD=${PYBUILD:-python$PYMM}
+command -v "$PYBUILD" >/dev/null 2>&1 \
+  || fatal "$PYBUILD not found: CPython $PYV needs a host python $PYMM (install python$PYMM and python$PYMM-venv, or set PYBUILD=/path/to/python$PYMM)"
+PYHOST=$("$PYBUILD" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+[ "$PYHOST" = "$PYMM" ] \
+  || fatal "$PYBUILD is Python $PYHOST, but CPython $PYV's configure needs a host python $PYMM (set PYBUILD=/path/to/python$PYMM)"
+"$PYBUILD" -c 'import venv, ensurepip' 2>/dev/null \
+  || fatal "$PYBUILD has no venv/ensurepip (install python$PYMM-venv)"
+
 [ -x "$CC" ] || fatal "NDK clang not found at $CC (set ANDROID_NDK_HOME)"
 mkdir -p "$DL" "$B" "$ASSETS"
 
@@ -67,7 +88,7 @@ echo "=== Python $PYV headers + Android pyconfig.h"
 if [ ! -f "$B/py/pyconfig.h" ]; then
   rm -rf "$B/Python-$PYV" "$B/py"; tar xzf "$DL/Python-$PYV.tgz" -C "$B"; mkdir -p "$B/py"
   (cd "$B/py" && CC="$CC" CONFIG_SITE=/dev/null "$B/Python-$PYV/configure" \
-     --host=aarch64-linux-android --build=x86_64-pc-linux-gnu --with-build-python=python3 --without-ensurepip \
+     --host=aarch64-linux-android --build=x86_64-pc-linux-gnu --with-build-python="$PYBUILD" --without-ensurepip \
      ac_cv_file__dev_ptmx=yes ac_cv_file__dev_ptc=no ac_cv_buggy_getaddrinfo=no > configure.log 2>&1) \
      || { tail -20 "$B/py/configure.log"; fatal "CPython configure failed"; }
 fi
@@ -86,7 +107,7 @@ tar xzf "$DL/libcurl-impersonate-$CURLV-android.tar.gz" -C "$B/curl"
 tar xzf "$DL/curl_cffi-$CCFFIV.tar.gz" -C "$B"; tar xzf "$DL/cffi-$CFFIV.tar.gz" -C "$B"
 CURL_A=$(find "$B/curl" -name libcurl-impersonate.a | head -1); [ -n "$CURL_A" ] || fatal "no libcurl-impersonate.a"
 CURL_INC=$(dirname "$(find "$B/curl" -path '*/curl/curl.h' | head -1)")/..
-[ -x "$WORK/venv/bin/python" ] || python3 -m venv "$WORK/venv"
+[ -x "$WORK/venv/bin/python" ] || "$PYBUILD" -m venv "$WORK/venv"
 "$WORK/venv/bin/pip" install -q "cffi==$CFFIV" setuptools
 
 rm -rf "$SITE"; mkdir -p "$SITE"
@@ -136,7 +157,6 @@ for f in "$SITE/_cffi_backend.cpython-312.so" "$SITE/curl_cffi/_wrapper.abi3.so"
 done
 
 echo "=== package"
-VERSION="curl_cffi-$CCFFIV cffi-$CFFIV libcurl-impersonate-$CURLV certifi-$CERTV cp312-arm64-v8a"
 # Sorted entries + fixed timestamps: the same inputs give a byte-identical zip.
 python3 - "$SITE" "$ASSETS/sieve-impersonate.zip" <<'PY'
 import os, sys, zipfile
@@ -150,6 +170,10 @@ with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         with open(os.path.join(root, p), "rb") as f:
             z.writestr(info, f.read())
 PY
+# The marker: pinned versions + the zip's own hash (the zip is byte-reproducible, so the hash only changes
+# when its content does). Computed AFTER the zip exists.
+ZIPSHA=$(sha256sum "$ASSETS/sieve-impersonate.zip" | cut -c1-12)
+VERSION="curl_cffi-$CCFFIV cffi-$CFFIV libcurl-impersonate-$CURLV certifi-$CERTV cp312-arm64-v8a sha256-$ZIPSHA"
 printf '%s\n' "$VERSION" > "$ASSETS/VERSION"
 
 {

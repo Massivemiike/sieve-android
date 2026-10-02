@@ -126,8 +126,8 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 - **Persistence:** Room 2.6.1 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).
 - **yt-dlp engine:** `io.github.junkfood02.youtubedl-android:library:0.18.1` (GPL-3.0).
-- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; encoders: libx264, libx265, SVT-AV1 4.2.0 (`libsvtav1`), libvpx 1.17.0 (`libvpx-vp9`), Opus 1.6.1 (`libopus`), LAME 3.100 (`libmp3lame`), libwebp 1.6.0 (`libwebp` / `libwebp_anim`) + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`.
-- **Browser impersonation:** **curl_cffi 0.16.3** with **libcurl-impersonate 2.2.2** fused in statically (+ cffi 2.0.0, certifi), cross-compiled (NDK r29, 16KB-aligned) for youtubedl-android's CPython 3.12 on arm64-v8a and unpacked into its site-packages at startup, so yt-dlp can present a real browser's TLS fingerprint like the desktop app's yt-dlp.exe. Build script: `engine/build-impersonate/build.sh`.
+- **FFmpeg:** self-built, full-GPL, **16KB-aligned** (NDK r27; encoders: libx264, libx265, SVT-AV1 4.2.0 (`libsvtav1`), libvpx 1.17.0 (`libvpx-vp9`), Opus 1.6.1 (`libopus`), LAME 3.100 (`libmp3lame`), libwebp 1.6.0 (`libwebp` / `libwebp_anim`) + MediaCodec/JNI; `-Wl,-z,max-page-size=16384`, verified `LOAD` align `0x4000`), built for **arm64-v8a** + **x86_64** and **exec'd as a child process** from `nativeLibraryDir` (`libsieveffmpeg.so`, `extractNativeLibs=true`) — never linked in-process. Build script: `transcode/build-ffmpeg/ffbuild.sh`; the codec license notices are regenerated from its pinned sources by `transcode/build-ffmpeg/codec-licenses.sh`.
+- **Browser impersonation:** **curl_cffi 0.16.3** with **libcurl-impersonate 2.2.2** fused in statically (+ cffi 2.0.0, certifi), cross-compiled (NDK r29, 16KB-aligned) for youtubedl-android's CPython 3.12 on arm64-v8a and unpacked into its site-packages at startup, so yt-dlp can present a real browser's TLS fingerprint like the desktop app's yt-dlp.exe. Build script: `engine/build-impersonate/build.sh` (host needs python3.12 + venv; its `VERSION` marker carries the zip's SHA-256).
 
 ---
 
@@ -135,12 +135,12 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 
 Sieve for Android is distributed under the **GNU General Public License, version 3 (GPLv3)**.
 
-The application links against GPL-licensed components at runtime — a self-built, full-GPL build of **FFmpeg** and **youtubedl-android** (which bundles **yt-dlp**). Because these libraries are covered by the GPL, the combined work as a whole is also licensed under GPLv3.
+The application ships GPL-licensed components: a self-built, full-GPL build of **FFmpeg**, and **youtubedl-android** (GPL-3.0) together with the prebuilt binaries inside it — its own Termux-built FFmpeg 7.1.1 and about 60 libraries, a Termux CPython 3.12 runtime (with GNU Readline and GDBM, GPL-3.0, and mutagen, GPL-2.0-or-later), QuickJS and **yt-dlp**. Because these are covered by the GPL, the combined work as a whole is also licensed under GPLv3.
 
-- **Written offer for source:** the complete corresponding source code for Sieve and its GPL-licensed dependencies is available, and a written offer to provide it is included with each release, in accordance with the GPL.
-- **In-app license texts:** the full text of the GPLv3 and the licenses of all bundled components ship inside the app and can be viewed from its About / Licenses screen.
+- **Written offer for source:** `licenses/FFMPEG_SOURCE.txt` (also shown in the app) names the corresponding source of all of it — the pinned commits and tarballs of the self-built FFmpeg, the youtubedl-android 0.18.1 tag, and the Termux recipes (commit, versions, source URLs and SHA-256) behind the companion FFmpeg and Python — and is a written offer valid for three years.
+- **In-app notices (About / Licenses):** the GPLv3 (`GPL.txt`), the written offer (`FFMPEG_SOURCE.txt`), the codec-library notices (`CODEC_LICENSES.txt`: Opus, libvpx, SVT-AV1 with the AOMedia patent license, libwebp, LAME, x264/x265), the engine-component notices (`ENGINE_NOTICES.txt`: Python, QuickJS, OpenSSL, libffi, ncurses, ...), the shared license texts (`COPYLEFT_TEXTS.txt`: Apache 2.0, GPL 2, LGPL 2.1/3, MPL 2.0), the browser-impersonation notices (`IMPERSONATE_LICENSES.txt`) and the font licenses. The long tail of permissive libraries inside the youtubedl-android binaries keeps its copyright notice in its source archive, which the written offer links.
 
-See `LICENSE`, `licenses/GPL.txt`, and `licenses/FFMPEG_SOURCE.txt`.
+See `LICENSE`, `licenses/GPL.txt`, `licenses/FFMPEG_SOURCE.txt`, `licenses/CODEC_LICENSES.txt`, `licenses/ENGINE_NOTICES.txt` and `licenses/COPYLEFT_TEXTS.txt`.
 
 ---
 

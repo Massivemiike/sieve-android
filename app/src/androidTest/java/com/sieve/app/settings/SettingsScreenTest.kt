@@ -15,6 +15,7 @@ import com.sieve.app.settings.CookiesInfo
 import com.sieve.app.ui.settings.NetworkActions
 import com.sieve.app.ui.settings.SettingsScreen
 import com.sieve.app.ui.settings.SettingsUiState
+import com.sieve.app.ui.settings.SettingsViewModel
 import com.sieve.app.ui.theme.SieveTheme
 import com.sieve.app.ui.theme.ThemeMode
 import org.junit.Rule
@@ -46,7 +47,61 @@ class SettingsScreenTest {
 
         rule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("reset_btn"))
         rule.onNodeWithTag("reset_btn").performClick()
+        assertEquals(0, reset)                                   // asks first: it also deletes the cookies.txt and the proxy
+        rule.onNodeWithText("Reset all settings").assertExists()
+        rule.onNodeWithTag("reset_confirm").performClick()
         assertEquals(1, reset)
+        rule.onNodeWithText("Reset all settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun cancellingTheResetConfirmationChangesNothing() {
+        var reset = 0
+        rule.setContent {
+            SieveTheme {
+                SettingsScreen(
+                    state = SettingsUiState(), onGrant = {}, onTheme = {}, onAccent = {}, onDefaultPreset = {},
+                    onMaxDownloads = {}, onMaxTranscodes = {}, onUpdateEngine = {}, onReset = { reset++ }, onOpenAbout = {},
+                )
+            }
+        }
+
+        rule.onNodeWithTag("settings_list").performScrollToNode(hasTestTag("reset_btn"))
+        rule.onNodeWithTag("reset_btn").performClick()
+        rule.onNodeWithText("History and downloaded files are not affected.", substring = true).assertExists()
+        rule.onNodeWithTag("reset_cancel").performClick()
+        assertEquals(0, reset)
+        rule.onNodeWithText("Reset all settings").assertDoesNotExist()
+    }
+
+    @Test
+    fun theUpdateResultShowsUnderTheEngineRowAndDismissesOnTap() {
+        var dismissed = 0
+        rule.setContent {
+            SieveTheme {
+                SettingsScreen(
+                    state = SettingsUiState(
+                        engineVersion = "2025.01.01",
+                        updateMessage = SettingsViewModel.UPDATE_BLOCKED_MESSAGE, updateMessageIsError = true,
+                    ),
+                    onGrant = {}, onTheme = {}, onAccent = {}, onDefaultPreset = {},
+                    onMaxDownloads = {}, onMaxTranscodes = {}, onUpdateEngine = {}, onReset = {}, onOpenAbout = {},
+                    onDismissUpdateMessage = { dismissed++ },
+                )
+            }
+        }
+
+        scrollTo("update_message")
+        rule.onNodeWithText("Wait for downloads to finish before updating yt-dlp.").assertExists()
+        rule.onNodeWithTag("update_message").performClick()
+        assertEquals(1, dismissed)
+    }
+
+    @Test
+    fun noUpdateMessageMeansNoUpdateLine() {
+        setScreen(SettingsUiState(engineVersion = "2025.01.01"), NetworkActions())
+        scrollTo("update_engine")
+        rule.onNodeWithTag("update_message").assertDoesNotExist()
     }
 
     private fun setScreen(state: SettingsUiState, network: NetworkActions) = rule.setContent {
