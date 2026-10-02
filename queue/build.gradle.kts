@@ -4,7 +4,8 @@ plugins {
 
 android {
     namespace = "com.sieve.queue"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -16,6 +17,8 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
+        // The instrumentation APK of a library module targets minSdk unless told otherwise; Play Protect blocks an APK built for API 26 on the test phone.
+        targetSdk = 37
     }
 }
 

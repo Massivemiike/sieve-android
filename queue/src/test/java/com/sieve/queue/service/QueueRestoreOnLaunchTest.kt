@@ -39,7 +39,7 @@ import org.robolectric.annotation.Config
  * restarted before that load finished must not mistake the still-empty queue for an idle one.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [35])
 @OptIn(ExperimentalCoroutinesApi::class)
 class QueueRestoreOnLaunchTest {
     private val app: android.app.Application get() = RuntimeEnvironment.getApplication()

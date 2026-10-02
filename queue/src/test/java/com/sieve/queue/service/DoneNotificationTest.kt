@@ -24,7 +24,7 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [35])
 class DoneNotificationTest {
     private val app: android.app.Application get() = RuntimeEnvironment.getApplication()
     private val saved = "content://media/external/downloads/7"

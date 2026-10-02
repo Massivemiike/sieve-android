@@ -5,7 +5,8 @@ plugins {
 
 android {
     namespace = "com.sieve.engine"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -14,7 +15,18 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        // The instrumentation APK of a library module targets minSdk unless told otherwise; Play Protect blocks an APK built for API 26 on the test phone.
+        targetSdk = 37
+    }
+
+    // youtubedl-android opens its Python bundle (lib/<abi>/libpython.zip.so) and ffmpeg zip by FILE PATH under nativeLibraryDir, so the
+    // native libs must be extracted to disk. With AGP 9 and minSdk >= 23 the default is extractNativeLibs=false (libs stored uncompressed and
+    // mmap'd out of the APK, no file on disk), and this module's instrumentation APK (:engine:connectedDebugAndroidTest, the library's own
+    // test package, which carries the library's jniLibs) then fails with ENOENT on libpython.zip.so. Same switch as :app, :storage and
+    // :transcode (AGP writes extractNativeLibs="true" into the merged manifest itself).
+    packaging { jniLibs { useLegacyPackaging = true } }
 }
 
 dependencies {

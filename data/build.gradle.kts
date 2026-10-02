@@ -5,7 +5,8 @@ plugins {
 
 android {
     namespace = "com.sieve.data"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -17,6 +18,8 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
         unitTests.isIncludeAndroidResources = true
+        // The instrumentation APK of a library module targets minSdk unless told otherwise; Play Protect blocks an APK built for API 26 on the test phone.
+        targetSdk = 37
     }
     // AGP 9: the `sourceSets[...]` accessor in an `android {}` block is typed to a removed AGP class (ClassCastException while
     // configuring), so the block form is used.

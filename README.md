@@ -121,7 +121,7 @@ The self-built FFmpeg `.so` ships for both **arm64-v8a** and **x86_64**, 16KB-al
 
 ## 🧰 Tech stack
 
-- **Language / toolchain:** Kotlin **2.4.20**, AGP 9.4.1, Gradle 9.8.0, JVM 17. `minSdk 26` (Android 8.0), `targetSdk 35`, `compileSdk 35`.
+- **Language / toolchain:** Kotlin **2.4.20**, AGP 9.4.1, Gradle 9.8.0, JVM 17. `minSdk 26` (Android 8.0), `targetSdk 37` and `compileSdk 37` (Android 17, the latest stable SDK; see [docs/SDK-37.md](docs/SDK-37.md)).
 - **UI:** Jetpack Compose (BOM 2024.09.03) + Material 3, Navigation Compose, Lifecycle ViewModel / Runtime Compose, Coil (thumbnails).
 - **Persistence:** Room 2.8.5 (via KSP, in `:data`) and DataStore Preferences 1.1.1 (settings + SAF grant).
 - **Serialization / async:** kotlinx-serialization-json, kotlinx-coroutines (Flow / StateFlow).

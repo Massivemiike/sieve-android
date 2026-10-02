@@ -13,11 +13,12 @@ val keystoreProps = Properties().apply { if (keystorePropsFile.exists()) load(ke
 
 android {
     namespace = "com.sieve.app"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         applicationId = "com.sieve.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 5
         versionName = "1.0.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -105,6 +106,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0") // Android 17 / targetSdk 37: lock-free MessageQueue; Espresso < 3.7.0 reflects into it
     androidTestImplementation("org.jetbrains.kotlin:kotlin-test:2.4.20")
     androidTestImplementation("org.jetbrains.kotlin:kotlin-test-junit:2.4.20")
     androidTestImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

@@ -5,7 +5,8 @@ plugins {
 
 android {
     namespace = "com.sieve.transcode"
-    compileSdk = 35
+    compileSdk = 37
+    buildToolsVersion = "37.0.0"
     defaultConfig {
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -14,7 +15,11 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    testOptions { unitTests.isReturnDefaultValues = true }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+        // The instrumentation APK of a library module targets minSdk unless told otherwise; Play Protect blocks an APK built for API 26 on the test phone.
+        targetSdk = 37
+    }
 
     // The self-built ffmpeg ships as jniLibs/<abi>/libsieveffmpeg.so and MUST be extracted to disk so it
     // can be exec'd from nativeLibraryDir (Android blocks exec of mmap'd/app-data files).
