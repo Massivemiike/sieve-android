@@ -14,6 +14,8 @@ import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +29,8 @@ data class DownloadUiState(
     val url: String = "",
     val analyzing: Boolean = false,
     val analyzed: VideoInfo? = null,
+    /** The (trimmed) link [analyzed] was read from; the analysis is only ever used for that exact link. */
+    val analyzedUrl: String? = null,
     /** Humanized analyze failure: [error] is the headline, [errorHint] the actionable second line. */
     val error: String? = null,
     val errorHint: String? = null,
@@ -64,8 +68,30 @@ class DownloadViewModel(
     private val _state = MutableStateFlow(DownloadUiState(selectedPresetId = DownloadPresets.byId(initialPresetId).id))
     val state: StateFlow<DownloadUiState> = _state.asStateFlow()
 
+    /** The analyze in flight, if any. It belongs to one link: another link (or a reset) must not take its result. */
+    private var analyzeJob: Job? = null
+    private var analyzingUrl: String? = null
+
+    private fun cancelAnalyze() {
+        analyzeJob?.cancel()
+        analyzeJob = null
+        analyzingUrl = null
+    }
+
     fun onUrlChange(url: String) {
-        _state.value = _state.value.copy(url = url, error = null, errorHint = null)
+        val s = _state.value
+        val link = url.trim()
+        // An edited or replaced link (a share, a paste) is not the one that was read: drop the card, and the
+        // analyze still running for the old link, so neither ends up on the new one's queue row.
+        val staleAnalysis = s.analyzedUrl != null && s.analyzedUrl != link
+        val staleAnalyze = analyzingUrl != null && analyzingUrl != link
+        if (staleAnalyze) cancelAnalyze()
+        _state.value = s.copy(
+            url = url, error = null, errorHint = null,
+            analyzing = s.analyzing && !staleAnalyze,
+            analyzed = if (staleAnalysis) null else s.analyzed,
+            analyzedUrl = if (staleAnalysis) null else s.analyzedUrl,
+        )
     }
 
     fun selectPreset(id: String) {
@@ -76,19 +102,29 @@ class DownloadViewModel(
 
     /** Clears the link and analysis; the chosen preset stays (the desktop never resets it either). */
     fun clear() {
+        cancelAnalyze()
         _state.value = DownloadUiState(selectedPresetId = _state.value.selectedPresetId)
     }
 
     fun analyze() {
         val url = _state.value.url.trim()
         if (url.isEmpty() || _state.value.analyzing) return
-        _state.value = _state.value.copy(analyzing = true, error = null, errorHint = null)
-        viewModelScope.launch {
+        // Like the desktop, a new analysis starts from nothing: a failure must not leave the previous card behind.
+        _state.value = _state.value.copy(analyzing = true, analyzed = null, analyzedUrl = null, error = null, errorHint = null)
+        analyzingUrl = url
+        analyzeJob = viewModelScope.launch {
             // The cookies file is anonymous-first inside the engine: it is only tried when the site asks for a login.
-            val cookies = engineSettings().cookiesFile.ifBlank { null }
-            when (val outcome = engine.analyze(url, null, cookies)) {
+            // Proxy and user-agent go with it, so reading the link leaves the phone the way the download will.
+            val settings = engineSettings()
+            val outcome = engine.analyze(
+                url, null, settings.cookiesFile.ifBlank { null }, settings.proxy.ifBlank { null }, settings.userAgent.ifBlank { null },
+            )
+            // The link was edited, replaced or cleared while this ran: its answer is for a link that is gone.
+            ensureActive()
+            analyzingUrl = null
+            when (outcome) {
                 is AnalyzeOutcome.Success ->
-                    _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, error = null, errorHint = null)
+                    _state.value = _state.value.copy(analyzing = false, analyzed = outcome.info, analyzedUrl = url, error = null, errorHint = null)
                 is AnalyzeOutcome.Failure -> {
                     val h = YtdlpErrors.humanize(outcome.message)
                     _state.value = _state.value.copy(analyzing = false, error = h.message, errorHint = h.hint)
@@ -101,7 +137,9 @@ class DownloadViewModel(
         val s = _state.value
         if (s.url.isBlank()) return
         val preset = DownloadPresets.byId(s.selectedPresetId)
-        val info = s.analyzed
+        // Only the analysis of THIS link describes it; anything else would put another video's title on the row.
+        val info = s.analyzed?.takeIf { s.analyzedUrl == s.url.trim() }
+        cancelAnalyze()
         viewModelScope.launch {
             val opts = DownloadArgsOptions(
                 format = preset.format,

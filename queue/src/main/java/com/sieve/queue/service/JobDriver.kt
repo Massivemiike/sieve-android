@@ -72,7 +72,8 @@ class JobDriver(
     /**
      * The message stays RAW (yt-dlp's own ERROR lines, not humanized) so [com.sieve.queue.core.RetryClassifier]
      * sees the real signals (429, network, ...); the UI humanizes it for display. Only `ERROR:` lines are
-     * kept — WARNING lines would otherwise leak into the verdict. The full blob tail rides in `stderrTail`.
+     * kept — WARNING lines would otherwise leak into the verdict. The full blob tail rides in `stderrTail`;
+     * the classifier reads only the ERROR lines of it too, so a WARNING there decides nothing either.
      */
     private fun downloadFailure(exitCode: Int, blob: String?): FailureInfo {
         val text = blob.orEmpty()

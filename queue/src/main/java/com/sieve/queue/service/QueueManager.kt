@@ -254,9 +254,27 @@ class QueueManager(
                 }
                 val spawnJob = withOutput(job, prepared)
                 dispatch(QueueEvent.MarkRunning(id))
+                var firstSignalSeen = false
                 driver.drive(spawnJob) { _state.value.job(id)?.cancelReason }
                     .collect { signal ->
-                        if (signal is JobSignal.Terminal && signal.outcome == Outcome.Succeeded) {
+                        // The port can't act on a cancel that lands before its process exists (the engine also
+                        // forgets it at the start of a run). The first signal means the process is up: if a
+                        // pause/cancel was stamped by now, send it again. Own coroutine: a transcode cancel
+                        // waits out its grace period and must not stall the collection.
+                        if (!firstSignalSeen && signal !is JobSignal.Terminal) {
+                            firstSignalSeen = true
+                            if (_state.value.job(id)?.cancelReason != null) scope.launch { killJob(id) }
+                        }
+                        // A cancel that still got in after the point of no return (the run was already past its
+                        // last check) wins over the run finishing: don't put a file the user cancelled in their
+                        // folder. A pause is different — the file is complete, so it just completes.
+                        val cancelledMeanwhile = signal is JobSignal.Terminal && signal.outcome == Outcome.Succeeded &&
+                            _state.value.job(id)?.cancelReason == CancelReason.USER_CANCEL
+                        if (cancelledMeanwhile) {
+                            val cancelled = JobSignal.Terminal(id, Outcome.Cancelled(CancelReason.USER_CANCEL))
+                            dispatch(QueueEvent.Signal(cancelled))
+                            onSignal(id, cancelled, prepared)
+                        } else if (signal is JobSignal.Terminal && signal.outcome == Outcome.Succeeded) {
                             // Finalize BEFORE dispatching COMPLETED. The COMPLETED dispatch flips the
                             // queue idle, which stops QueueService → onDestroy cancels the manager's
                             // scope → a finalize still copying out of the work dir dies with

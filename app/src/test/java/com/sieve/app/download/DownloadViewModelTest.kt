@@ -11,6 +11,7 @@ import com.sieve.engine.update.UpdateCheck
 import com.sieve.engine.update.UpdateResult
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.QueueJob
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -38,8 +39,14 @@ class DownloadViewModelTest {
     private class FakeEngine(var outcome: AnalyzeOutcome) : YtDlpEngine {
         /** The cookies file each analyze call was given. */
         val analyzeCookies = mutableListOf<String?>()
-        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+        /** The (proxy, user-agent) each analyze call was given. */
+        val analyzeNetwork = mutableListOf<Pair<String?, String?>>()
+        /** When set, analyze waits for it, so a test can change the screen while a link is being read. */
+        var gate: CompletableDeferred<Unit>? = null
+        override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?, proxy: String?, userAgent: String?): AnalyzeOutcome {
             analyzeCookies += cookiesFile
+            analyzeNetwork += proxy to userAgent
+            gate?.await()
             return outcome
         }
         override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = emptyFlow()
@@ -235,6 +242,128 @@ class DownloadViewModelTest {
         vm.onUrlChange("https://x/y")
         vm.analyze(); advanceUntilIdle()
         assertEquals(listOf<String?>(null), engine.analyzeCookies)
+    }
+
+    @Test fun analyzeHandsTheEngineTheProxyAndUserAgent() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(
+            engine, { }, idGen = { "id" },
+            engineSettings = { com.sieve.engine.args.EngineSettings(proxy = "socks5://127.0.0.1:1080", userAgent = "SieveTest/1.0") },
+        )
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>("socks5://127.0.0.1:1080" to "SieveTest/1.0"), engine.analyzeNetwork)
+    }
+
+    @Test fun analyzeSendsNoProxyOrUserAgentWhenNoneIsSet() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Failure("x"))
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://x/y")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(listOf<Pair<String?, String?>>(null to null), engine.analyzeNetwork)
+    }
+
+    // ---- an analysis belongs to the link it was read from ----
+
+    private val otherInfo = VideoInfo(id = "zzz", title = "Other Vid", uploader = "Other", extractor = "vimeo", thumbnail = "http://other", duration = 5.0)
+
+    @Test fun anEditedLinkDropsTheAnalysisOfTheOldOne() = runTest {
+        val vm = vm(AnalyzeOutcome.Success(info), mutableListOf())
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(info, vm.state.value.analyzed)
+
+        vm.onUrlChange("https://vimeo.com/999")
+        assertNull(vm.state.value.analyzed)
+        assertNull(vm.state.value.analyzedUrl)
+    }
+
+    // The scenario from the review: analyze link A, then a share replaces the field with link B.
+    @Test fun aLinkReplacedAfterAnalyzeDoesNotInheritTheOldMetadata() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = vm(AnalyzeOutcome.Success(info), sink)
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        vm.onUrlChange("https://vimeo.com/999")
+        vm.download(); advanceUntilIdle()
+
+        val job = sink.single()
+        assertEquals("https://vimeo.com/999", (job.spec as JobSpec.Download).url)
+        assertEquals("", job.title)
+        assertEquals("", job.channel)
+        assertEquals("Unknown", job.site)
+        assertEquals("", job.thumbnailUrl)
+        assertNull(job.durationSec)
+    }
+
+    @Test fun retypingTheSameLinkKeepsTheAnalysis() = runTest {
+        val vm = vm(AnalyzeOutcome.Success(info), mutableListOf())
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        vm.onUrlChange("  https://youtube.com/watch?v=abc \n")
+        assertEquals(info, vm.state.value.analyzed)
+    }
+
+    @Test fun aLateAnalysisOfAnOldLinkIsIgnored() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Success(info)).apply { gate = CompletableDeferred() }
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        assertTrue(vm.state.value.analyzing)
+
+        vm.onUrlChange("https://vimeo.com/999") // the link changes while the first one is still being read
+        assertEquals(false, vm.state.value.analyzing)
+        engine.gate!!.complete(Unit)
+        advanceUntilIdle()
+
+        assertNull(vm.state.value.analyzed)
+        assertNull(vm.state.value.error)
+        assertEquals(false, vm.state.value.analyzing)
+        assertEquals("https://vimeo.com/999", vm.state.value.url)
+    }
+
+    @Test fun aLateAnalysisNeverLandsOnAClearedOrResetScreen() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Success(info)).apply { gate = CompletableDeferred() }
+        val sink = mutableListOf<QueueJob>()
+        val vm = DownloadViewModel(engine, { sink += it }, idGen = { "id" })
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        vm.clear()
+        engine.gate!!.complete(Unit); advanceUntilIdle()
+        assertNull(vm.state.value.analyzed)
+
+        engine.gate = CompletableDeferred()
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        vm.download(); advanceUntilIdle() // queued without the (unfinished) analysis, then the screen resets
+        engine.gate!!.complete(Unit); advanceUntilIdle()
+        assertNull(vm.state.value.analyzed)
+        assertEquals("", vm.state.value.url)
+        assertEquals("", sink.single().title)
+    }
+
+    @Test fun aNewAnalyzeStartsFromNothingSoAFailureLeavesNoStaleCard() = runTest {
+        val engine = FakeEngine(AnalyzeOutcome.Success(info))
+        val vm = DownloadViewModel(engine, { }, idGen = { "id" })
+        vm.onUrlChange("https://youtube.com/watch?v=abc")
+        vm.analyze(); advanceUntilIdle()
+        assertEquals(info, vm.state.value.analyzed)
+
+        engine.outcome = AnalyzeOutcome.Failure("ERROR: HTTP Error 429: Too Many Requests")
+        vm.analyze(); advanceUntilIdle()
+        assertNull(vm.state.value.analyzed)
+        assertNull(vm.state.value.analyzedUrl)
+        assertTrue(vm.state.value.error!!.contains("Rate-limited"))
+    }
+
+    @Test fun theAnalysisOfTheCurrentLinkStillDescribesItsDownload() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = vm(AnalyzeOutcome.Success(otherInfo), sink)
+        vm.onUrlChange(" https://vimeo.com/999 ")
+        vm.analyze(); advanceUntilIdle()
+        vm.download(); advanceUntilIdle()
+        assertEquals("Other Vid", sink.single().title)
+        assertEquals("vimeo", sink.single().site)
     }
 
     // ---- default / last-used preset ----

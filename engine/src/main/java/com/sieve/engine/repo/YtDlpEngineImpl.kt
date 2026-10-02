@@ -4,6 +4,7 @@ import com.sieve.engine.model.VideoInfo
 import com.sieve.engine.parse.AnalyzeError
 import com.sieve.engine.parse.AnalyzeException
 import com.sieve.engine.parse.AnalyzeParser
+import com.sieve.engine.parse.LogRedactor
 import com.sieve.engine.parse.ProgressParser
 import com.sieve.engine.parse.StoryboardDetector
 import com.sieve.engine.site.SiteRules
@@ -14,10 +15,14 @@ import com.sieve.engine.update.UpdateResult
 import com.sieve.engine.update.VersionCompare
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
@@ -26,6 +31,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -41,10 +47,27 @@ class YtDlpEngineImpl(
     analyzeConcurrency: Int = 2,
     /** How long one analyze attempt may run before it is killed. Injectable so tests can use a tiny value. */
     private val analyzeTimeoutMs: Long = ANALYZE_TIMEOUT_MS,
+    /**
+     * Where each yt-dlp run's private copy of the cookies.txt lives (the app cache dir in production). Anything
+     * left in it belongs to a run of a dead process, so it is emptied when the engine is created.
+     */
+    private val cookiesScratchDir: File = File(System.getProperty("java.io.tmpdir") ?: ".", "sieve-cookies"),
 ) : YtDlpEngine {
 
     private val gate = Semaphore(analyzeConcurrency)
     private val cancelledIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Owns the analyze watchdogs. They must not be children of the caller's scope: a caller that goes away
+     * cancels its children, and a cancelled watchdog can no longer kill a process that is still running.
+     */
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val cookieCopySeq = AtomicLong()
+
+    init {
+        runCatching { cookiesScratchDir.listFiles()?.forEach { it.delete() } }
+    }
 
     /**
      * An update replaces the yt-dlp files in place, so it must never overlap a yt-dlp run: runs hold
@@ -75,29 +98,83 @@ class YtDlpEngineImpl(
 
     private class Analyzed(val info: VideoInfo, val used: String)
 
+    /** The Network settings that apply to reading a link too, so it goes out the way the download will. */
+    private class AnalyzeNet(val proxy: String?, val userAgent: String?)
+
+    /**
+     * Runs [block] with a private copy of the cookies.txt that [args] points at, and deletes the copy after.
+     * yt-dlp saves its cookie jar back to the file it was given when it exits, so handing it the user's own
+     * file would rewrite it on every run (the Settings age chip would always read "< 1 day old") and let
+     * concurrent runs read each other's half-written copy. Without a readable source file (or when it cannot
+     * be copied) the args go through unchanged and yt-dlp reports the real problem.
+     */
+    private inline fun <T> withPrivateCookies(args: List<String>, block: (List<String>) -> T): T {
+        val flagAt = args.indexOf("--cookies")
+        val source = if (flagAt >= 0 && flagAt + 1 < args.size) File(args[flagAt + 1]) else null
+        val copy = source?.takeIf { it.isFile }?.let { copyCookies(it) } ?: return block(args)
+        try {
+            return block(args.toMutableList().also { it[flagAt + 1] = copy.absolutePath })
+        } finally {
+            copy.delete()
+        }
+    }
+
+    private fun copyCookies(source: File): File? {
+        var copy: File? = null
+        return try {
+            cookiesScratchDir.mkdirs()
+            File.createTempFile("cookies-${cookieCopySeq.incrementAndGet()}-", ".txt", cookiesScratchDir).also {
+                copy = it
+                source.copyTo(it, overwrite = true)
+            }
+        } catch (e: IOException) {
+            android.util.Log.w("SieveDL", "couldn't copy the cookies file for this run: ${e.message}")
+            copy?.delete()
+            null
+        }
+    }
+
     /**
      * One analyze attempt; throws on non-zero exit, timeout or unparseable output. The library
      * throws on any non-zero exit (message = full stderr), so both a thrown failure and an
      * `exitCode != 0` result are handled. `client.execute` blocks, so the timeout is a watchdog
-     * that kills the process by id rather than a coroutine `withTimeout`.
+     * that kills the process by id rather than a coroutine `withTimeout`. The watchdog is armed only
+     * once the engine lock is held (the wait behind an update is not the site's fault), and a caller
+     * that gives up kills the process too, so it can't keep running and hold an analyze permit.
      */
-    private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): VideoInfo = coroutineScope {
+    private suspend fun runAnalyze(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): VideoInfo = coroutineScope {
         val id = "analyze-${analyzeSeq.incrementAndGet()}"
         val opts = buildList {
             add("--encoding"); add("utf-8")
             add("-J"); add("--flat-playlist"); add("-I"); add("1:$ANALYZE_ENTRY_CAP")
+            if (!net.proxy.isNullOrBlank()) { add("--proxy"); add(net.proxy) }
             if (!cookiesBrowser.isNullOrBlank()) { add("--cookies-from-browser"); add(cookiesBrowser) }
             if (!cookiesFile.isNullOrBlank()) { add("--cookies"); add(cookiesFile) }
+            if (!net.userAgent.isNullOrBlank()) { add("--user-agent"); add(net.userAgent) }
         }
         val timedOut = AtomicBoolean(false)
-        val watchdog = launch(Dispatchers.Default) {
-            delay(analyzeTimeoutMs)
-            timedOut.set(true)
-            runCatching { client.destroy(id) }
+        val finished = AtomicBoolean(false)
+        // execute() ignores coroutine cancellation: when the caller is cancelled this child is cancelled with it
+        // and is the only thing still able to stop the process.
+        val callerGone = launch(Dispatchers.Default) {
+            try { awaitCancellation() } finally { if (!finished.get()) runCatching { client.destroy(id) } }
         }
         try {
             val res = try {
-                engineFiles.read { client.execute(id, url, opts) { _, _, _ -> } }
+                engineFiles.read {
+                    // Gave up while waiting for an update to finish: never start it.
+                    ensureActive()
+                    val watchdog = watchdogScope.launch {
+                        delay(analyzeTimeoutMs)
+                        timedOut.set(true)
+                        runCatching { client.destroy(id) }
+                    }
+                    try {
+                        withPrivateCookies(opts) { client.execute(id, url, it) { _, _, _ -> } }
+                    } finally {
+                        watchdog.cancel()
+                    }
+                }
             } catch (e: Exception) {
                 if (timedOut.get()) throw AnalyzeException(ANALYZE_TIMEOUT_MESSAGE, e)
                 throw e
@@ -110,31 +187,39 @@ class YtDlpEngineImpl(
             val warnings = res.err.lines().filter { it.trimStart().startsWith("WARNING:") }.take(MAX_WARNINGS)
             if (warnings.isEmpty()) info else info.copy(warnings = warnings)
         } finally {
-            watchdog.cancel()
+            finished.set(true)
+            callerGone.cancel()
         }
     }
 
     /** [runAnalyze] plus the alternate-URL retry (Vimeo player form) when the site rejects the first form. */
-    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?, cookiesFile: String? = null): Analyzed {
+    private suspend fun analyzeSettling(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): Analyzed {
         try {
-            return Analyzed(runAnalyze(url, cookiesBrowser, cookiesFile), url)
+            return Analyzed(runAnalyze(url, cookiesBrowser, cookiesFile, net), url)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             val stderr = (e as? AnalyzeException)?.stderr ?: e.message
             val alt = SiteRules.fallbackUrl(url, SiteRules.errorText(stderr)) ?: throw e
             // The alternate form's answer is the more useful error when it fails too.
-            return Analyzed(runAnalyze(alt, cookiesBrowser, cookiesFile), alt)
+            return Analyzed(runAnalyze(alt, cookiesBrowser, cookiesFile, net), alt)
         }
     }
 
-    override suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome = withContext(io) {
+    override suspend fun analyze(
+        url: String,
+        cookiesBrowser: String?,
+        cookiesFile: String?,
+        proxy: String?,
+        userAgent: String?,
+    ): AnalyzeOutcome = withContext(io) {
+        val net = AnalyzeNet(proxy, userAgent)
         gate.withPermit {
-            val first = analyzeAttempt(url, cookiesBrowser, cookiesFile = null)
+            val first = analyzeAttempt(url, cookiesBrowser, cookiesFile = null, net)
             // Anonymous first (the desktop's rule for hosts where cookies hurt, applied to the cookies file
             // everywhere): the file only gets one go, and only when the site asked for a login.
             if (first is AnalyzeOutcome.Failure && !cookiesFile.isNullOrBlank() && SiteRules.looksLoginRequired(first.message)) {
-                val withFile = analyzeAttempt(url, cookiesBrowser, cookiesFile)
+                val withFile = analyzeAttempt(url, cookiesBrowser, cookiesFile, net)
                 if (withFile is AnalyzeOutcome.Success) withFile else first // the original error is the useful one
             } else {
                 first
@@ -143,14 +228,14 @@ class YtDlpEngineImpl(
     }
 
     /** One analyze (browser cookies with their anonymous fallback, then the player-URL fallback), see [analyze]. */
-    private suspend fun analyzeAttempt(url: String, cookiesBrowser: String?, cookiesFile: String?): AnalyzeOutcome {
+    private suspend fun analyzeAttempt(url: String, cookiesBrowser: String?, cookiesFile: String?, net: AnalyzeNet): AnalyzeOutcome {
         val normalized = SiteRules.normalizeUrl(url)
         val hadCookies = !cookiesBrowser.isNullOrBlank()
         return try {
-            val first = analyzeSettling(normalized, cookiesBrowser, cookiesFile)
+            val first = analyzeSettling(normalized, cookiesBrowser, cookiesFile, net)
             // Cookies sometimes make YouTube serve the degraded (storyboard-only) extractor.
             if (hadCookies && StoryboardDetector.hasOnlyStoryboards(first.info)) {
-                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile, net) }.getOrNull()
                 if (fallback != null && !StoryboardDetector.hasOnlyStoryboards(fallback.info)) {
                     rememberSettled(url, normalized, fallback.used)
                     return AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
@@ -164,7 +249,7 @@ class YtDlpEngineImpl(
         } catch (err: Exception) {
             if (hadCookies) {
                 // The cookie attempt failed outright — retry without, returned unconditionally.
-                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile) }.getOrNull()
+                val fallback = runCatching { analyzeSettling(normalized, null, cookiesFile, net) }.getOrNull()
                 if (fallback != null) {
                     rememberSettled(url, normalized, fallback.used)
                     AnalyzeOutcome.Success(fallback.info.copy(cookieFallback = true))
@@ -178,13 +263,18 @@ class YtDlpEngineImpl(
     }
 
     override fun download(id: String, url: String, args: List<String>): Flow<EngineEvent> = channelFlow {
+        // Only drops a stale id left by an earlier run of this job. A cancel that really predates this start is
+        // re-sent by the queue once the process is up (QueueManager.launchJob) and wins over a finished run there.
         cancelledIds.remove(id)
         ensureOutputDir(args)
-        android.util.Log.i("SieveDL", "download start id=$id args=$args")
+        // The args can hold a proxy password or auth headers: logcat ends up in bug reports.
+        android.util.Log.i("SieveDL", "download start id=$id args=${LogRedactor.redactArgs(args)}")
         withContext(io) {
             // First attempt: the URL form analyze settled on, else the deterministic normalization.
             var target = settledUrls[url] ?: settledUrls[url.trim()] ?: SiteRules.normalizeUrl(url)
-            var runArgs = listOf("--encoding", "utf-8") + args
+            // --no-warnings as on desktop (CLAUDE.md): it keeps WARNING lines out of the failure text that the
+            // retry verdict and the humanizer read. Analyze keeps its warnings (VideoInfo.warnings).
+            var runArgs = listOf("--encoding", "utf-8", "--no-warnings") + args
             // Each recovery runs at most once per download.
             val tried = mutableSetOf<String>()
             var drmStderr: String? = null
@@ -196,14 +286,17 @@ class YtDlpEngineImpl(
                     val result = engineFiles.read {
                         // Cancelled while waiting for an update to finish: never start it.
                         if (cancelledIds.contains(id)) throw IllegalStateException("cancelled before start")
-                        client.execute(id, target, runArgs) { _, _, line ->
-                            for (ln in line.split("\n")) {
-                                if (ln.isBlank()) continue
-                                val progress = ProgressParser.parseProgress(ln)
-                                if (progress != null) {
-                                    trySend(EngineEvent.Progress(progress))
-                                } else {
-                                    trySend(EngineEvent.Log(ProgressParser.cleanLogLine(ln), ProgressParser.parseFilePath(ln), false))
+                        // yt-dlp gets its own copy of the cookies.txt: it rewrites the file it is given.
+                        withPrivateCookies(runArgs) { runArgsForThisRun ->
+                            client.execute(id, target, runArgsForThisRun) { _, _, line ->
+                                for (ln in line.split("\n")) {
+                                    if (ln.isBlank()) continue
+                                    val progress = ProgressParser.parseProgress(ln)
+                                    if (progress != null) {
+                                        trySend(EngineEvent.Progress(progress))
+                                    } else {
+                                        trySend(EngineEvent.Log(LogRedactor.redact(ProgressParser.cleanLogLine(ln)), ProgressParser.parseFilePath(ln), false))
+                                    }
                                 }
                             }
                         }
@@ -211,7 +304,10 @@ class YtDlpEngineImpl(
                     exitCode = result.exitCode
                     stderr = result.err
                     if (exitCode != 0) {
-                        android.util.Log.e("SieveDL", "EXIT=$exitCode\nSTDERR:\n${result.err.takeLast(4000)}\nSTDOUT:\n${result.out.takeLast(1500)}")
+                        android.util.Log.e(
+                            "SieveDL",
+                            "EXIT=$exitCode\nSTDERR:\n${LogRedactor.redact(result.err.takeLast(4000))}\nSTDOUT:\n${LogRedactor.redact(result.out.takeLast(1500))}",
+                        )
                     }
                 } catch (e: CancellationException) {
                     send(EngineEvent.Cancelled)
@@ -268,13 +364,13 @@ class YtDlpEngineImpl(
                 // the DRM error that started the retry is the one to show.
                 val drmOnly = drmStderr?.takeIf { REQUESTED_FORMAT.containsMatchIn(SiteRules.errorText(stderr)) }
                 if (thrown != null) {
-                    android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)}")
-                    send(EngineEvent.Log(drmOnly ?: thrown.message ?: "download failed", null, true))
+                    android.util.Log.e("SieveDL", "DL threw: ${thrown.javaClass.simpleName}\n${thrown.message?.takeLast(4000)?.let(LogRedactor::redact)}")
+                    send(EngineEvent.Log(LogRedactor.redact(drmOnly ?: thrown.message ?: "download failed"), null, true))
                     send(EngineEvent.Completed(1))
                 } else {
                     // Same contract as the thrown path: the failure's text travels as an error Log so
                     // the queue can show and classify the real cause, not just the exit code.
-                    val text = drmOnly ?: stderr
+                    val text = LogRedactor.redact(drmOnly ?: stderr)
                     if (text.isNotBlank()) send(EngineEvent.Log(text, null, true))
                     send(EngineEvent.Completed(exitCode))
                 }

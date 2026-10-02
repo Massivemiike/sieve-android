@@ -20,9 +20,17 @@ sealed interface AnalyzeOutcome {
  * `analyze`'s [cookiesFile] is a real, readable path to a Netscape cookies.txt. It is anonymous-first:
  * the file is only tried (once) when the anonymous attempt fails because the site wants a login, so
  * sites where cookies hurt (YouTube's degraded extractor, LinkedIn, Facebook) are never given them.
+ * [proxy] and [userAgent] are the Network settings and go on every attempt, so reading a link leaves the
+ * phone the same way the download will (a region-locked link then analyzes, and the real IP isn't exposed).
  */
 interface YtDlpEngine {
-    suspend fun analyze(url: String, cookiesBrowser: String?, cookiesFile: String? = null): AnalyzeOutcome
+    suspend fun analyze(
+        url: String,
+        cookiesBrowser: String?,
+        cookiesFile: String? = null,
+        proxy: String? = null,
+        userAgent: String? = null,
+    ): AnalyzeOutcome
     fun download(id: String, url: String, args: List<String>): Flow<EngineEvent>
     fun cancel(id: String): Boolean
     suspend fun version(): String?

@@ -3,10 +3,19 @@ package com.sieve.engine.repo
 import com.sieve.engine.update.GithubReleaseApi
 import com.sieve.engine.update.UpdateResult
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
+import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -28,6 +37,8 @@ private class FakeClient(
     private val onExecute: (() -> Unit)? = null,
     /** Block inside execute() until destroy() is called (simulates a hung yt-dlp). */
     private val blockUntilDestroyed: Boolean = false,
+    /** Sees each call as yt-dlp would: before it runs, with the args it was given. */
+    private val onCall: ((Call) -> Unit)? = null,
 ) : YoutubeDLClient {
     val calls = CopyOnWriteArrayList<Call>()
     val destroyed = CopyOnWriteArrayList<String>()
@@ -40,7 +51,7 @@ private class FakeClient(
         options: List<String>,
         onProgress: (Float, Long, String) -> Unit,
     ): ExecResult {
-        calls.add(Call(processId, url, options))
+        calls.add(Call(processId, url, options).also { onCall?.invoke(it) })
         execLines.forEach { onProgress(0f, 0L, it) }
         onExecute?.invoke()
         if (blockUntilDestroyed) {
@@ -158,6 +169,42 @@ class YtDlpEngineImplAnalyzeTest {
         assertEquals(1, client.calls.size)
     }
 
+    // ---- proxy + user agent: link analysis leaves the phone the way the download will ----
+
+    @Test fun analyzePassesTheProxyAndUserAgentOnEveryAttempt() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(exited(1, signIn), ok(realJson))))
+        val r = newEngine(client).analyze("https://example.com/v", null, "/data/cookies.txt", "socks5://127.0.0.1:1080", "SieveTest/1.0")
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertEquals(2, client.calls.size) // the anonymous try, then the cookies.txt try
+        for (call in client.calls) {
+            assertEquals("socks5://127.0.0.1:1080", call.options[call.options.indexOf("--proxy") + 1])
+            assertEquals("SieveTest/1.0", call.options[call.options.indexOf("--user-agent") + 1])
+        }
+    }
+
+    @Test fun analyzeWithoutNetworkSettingsSendsNeitherFlag() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        newEngine(client).analyze("https://example.com/v", null)
+        val opts = client.calls.single().options
+        assertFalse("--proxy" in opts)
+        assertFalse("--user-agent" in opts)
+    }
+
+    @Test fun aBlankProxyOrUserAgentIsNotSent() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
+        newEngine(client).analyze("https://example.com/v", null, null, "  ", "")
+        val opts = client.calls.single().options
+        assertFalse("--proxy" in opts)
+        assertFalse("--user-agent" in opts)
+    }
+
+    @Test fun theVimeoPlayerRetryKeepsTheProxy() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(VIMEO_WALL), ok(realJson))))
+        newEngine(client).analyze(VIMEO_PAGE, null, null, "http://proxy:8080", null)
+        assertEquals(listOf(VIMEO_PAGE, VIMEO_PLAYER), client.calls.map { it.url })
+        assertTrue(client.calls.all { "http://proxy:8080" in it.options })
+    }
+
     @Test fun analyzeOptionsAreFlatCappedUtf8AndKeepWarnings() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(ok(realJson))))
         newEngine(client).analyze("https://example.com/v", null)
@@ -258,6 +305,17 @@ class YtDlpEngineImplAnalyzeTest {
         assertTrue(client.destroyed.isEmpty())
     }
 
+    // execute() blocks and ignores coroutine cancellation: a caller that goes away (the screen is closed)
+    // must still get the process killed, or it keeps running and holds one of the analyze permits.
+    @Test fun cancellingTheCallerKillsAHungAnalyze() = runBlocking {
+        val client = FakeClient(blockUntilDestroyed = true)
+        val job = launch(Dispatchers.Default) { newEngine(client).analyze("https://example.com/slow", null) }
+        withTimeout(5_000) { while (client.calls.isEmpty()) delay(10) }
+        job.cancel()
+        withTimeout(5_000) { job.join() }
+        assertEquals(client.calls.map { it.id }, client.destroyed.toList())
+    }
+
     @Test fun downloadStartsFromTheUrlFormAnalyzeSettledOn() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(threw(VIMEO_WALL), ok(realJson), ok("", ""))))
         val e = newEngine(client)
@@ -312,11 +370,20 @@ class YtDlpEngineImplDownloadTest {
         assertFalse(events.any { it is EngineEvent.Completed })
     }
 
-    @Test fun encodingFlagIsPrependedAndTheRestOfTheArgsAreUntouched() = runTest {
+    // Desktop CLAUDE.md: "Must always pass --no-warnings to downloads (analyze keeps warnings)". It keeps WARNING
+    // lines out of the failure text the retry verdict and the humanizer read.
+    @Test fun encodingAndNoWarningsFlagsArePrependedAndTheRestOfTheArgsAreUntouched() = runTest {
         val client = FakeClient()
         newEngine(client).download("id1", "u", args).toList()
         val opts = client.calls.single().options
-        assertEquals(listOf("--encoding", "utf-8") + args, opts)
+        assertEquals(listOf("--encoding", "utf-8", "--no-warnings") + args, opts)
+    }
+
+    @Test fun noWarningsSurvivesEveryRecoveryRetry() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw(DRM_ERR), threw(EMBED_ERR), Result.success(ExecResult(0, "", "")))))
+        newEngine(client).download("id1", "https://example.com/v", args + "--embed-thumbnail").toList()
+        assertEquals(3, client.calls.size)
+        assertTrue(client.calls.all { it.options.count { o -> o == "--no-warnings" } == 1 })
     }
 
     @Test fun downloadNormalizesLinkedinUrl() = runTest {
@@ -438,6 +505,24 @@ class YtDlpEngineImplDownloadTest {
         assertEquals(listOf<EngineEvent>(EngineEvent.Log(DRM_ERR, null, true), EngineEvent.Completed(1)), events.takeLast(2))
     }
 
+    // The text of a run lands in logcat and in the queue row's log: a proxy password must not travel with it.
+    private val proxyEcho = "ERROR: Unable to connect to proxy socks5://alice:s3cret@10.0.0.2:1080 (Connection refused)"
+
+    @Test fun aFailureTextNeverCarriesProxyCredentials() = runTest {
+        for (failure in listOf(exited(1, proxyEcho), threw(proxyEcho))) {
+            val client = FakeClient(execResults = ArrayDeque(listOf(failure)))
+            val events = newEngine(client).download("id1", "https://example.com/v", args + listOf("--proxy", "socks5://alice:s3cret@10.0.0.2:1080")).toList()
+            val errorLog = events.filterIsInstance<EngineEvent.Log>().single { it.isError }
+            assertEquals("ERROR: Unable to connect to proxy socks5://***@10.0.0.2:1080 (Connection refused)", errorLog.line)
+        }
+    }
+
+    @Test fun progressOutputNeverCarriesProxyCredentials() = runTest {
+        val client = FakeClient(execLines = listOf("[generic] Using proxy socks5://alice:s3cret@10.0.0.2:1080"))
+        val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
+        assertEquals(listOf("[generic] Using proxy socks5://***@10.0.0.2:1080"), events.filterIsInstance<EngineEvent.Log>().map { it.line })
+    }
+
     @Test fun otherFailureEmitsErrorLogAndCompleted1WithoutRetry() = runTest {
         val client = FakeClient(execResults = ArrayDeque(listOf(threw("ERROR: [youtube] abc: Video unavailable"))))
         val events = newEngine(client).download("id1", "https://example.com/v", args).toList()
@@ -472,5 +557,132 @@ class YtDlpEngineImplDownloadTest {
         val events = engine.download("id1", "https://example.com/v", args).toList()
         assertEquals(1, client.calls.size)
         assertFalse(events.any { it is EngineEvent.Log && it.line.startsWith("[retry]") })
+    }
+}
+
+/**
+ * yt-dlp saves its cookie jar back to the file it was given. Every run therefore gets a private copy, so the
+ * user's cookies.txt is never rewritten (its modified time is what the Settings age chip reads) and two
+ * concurrent runs never read each other's half-written file.
+ */
+class YtDlpEngineImplCookiesTest {
+    private val cookies = "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n"
+    private val realJson = """{"id":"x","title":"T","formats":[{"format_id":"22","vcodec":"avc1","acodec":"mp4a"}]}"""
+    private val signIn = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users."
+    private val hundredDaysAgo = System.currentTimeMillis() - 100L * 24 * 3600 * 1000
+
+    private val dir: File = Files.createTempDirectory("sieve-cookies-test").toFile()
+    private val scratch = File(dir, "scratch")
+    private val master = File(dir, "cookies.txt").apply { writeText(cookies); setLastModified(hundredDaysAgo) }
+
+    /** What yt-dlp saw of its --cookies file when it ran, and what it did to it. */
+    private class Seen { var path: String? = null; var text: String? = null }
+
+    /** Records the --cookies file, then rewrites it like yt-dlp's cookie jar save does. */
+    private fun rewritingClient(seen: Seen, results: ArrayDeque<Result<ExecResult>> = ArrayDeque()) = FakeClient(
+        execResults = results,
+        onCall = { call ->
+            val i = call.options.indexOf("--cookies")
+            if (i >= 0) {
+                val f = File(call.options[i + 1])
+                seen.path = f.absolutePath
+                seen.text = f.readText()
+                f.writeText("# Netscape HTTP Cookie File\n# rewritten by yt-dlp\n")
+            }
+        },
+    )
+
+    private fun engine(client: FakeClient) =
+        YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.Unconfined, cookiesScratchDir = scratch)
+
+    private fun assertUserFileUntouched() {
+        assertEquals(cookies, master.readText())
+        assertEquals(hundredDaysAgo / 1000, master.lastModified() / 1000)
+    }
+
+    private fun assertNoCopiesLeft() = assertEquals(emptyList<String>(), scratch.list()?.toList().orEmpty())
+
+    @Test fun analyzeGivesYtDlpAPrivateCopyAndLeavesTheUsersFileAlone() = runTest {
+        val seen = Seen()
+        val client = rewritingClient(seen, ArrayDeque(listOf(exited(1, signIn), ok(realJson))))
+        val r = engine(client).analyze("https://example.com/v", null, master.absolutePath)
+        assertTrue(r is AnalyzeOutcome.Success)
+        assertFalse(seen.path == master.absolutePath, "yt-dlp was handed the user's own file")
+        assertEquals(cookies, seen.text) // the copy held the cookies
+        assertUserFileUntouched()
+        assertNoCopiesLeft()
+    }
+
+    @Test fun downloadGivesYtDlpAPrivateCopyAndLeavesTheUsersFileAlone() = runTest {
+        val seen = Seen()
+        val client = rewritingClient(seen)
+        engine(client).download("id1", "https://example.com/v", listOf("-f", "best", "--cookies", master.absolutePath, "-N", "4")).toList()
+        val opts = client.calls.single().options
+        assertEquals("best", opts[opts.indexOf("-f") + 1]) // the rest of the args are untouched
+        assertEquals("4", opts[opts.indexOf("-N") + 1])
+        assertFalse(seen.path == master.absolutePath)
+        assertEquals(cookies, seen.text)
+        assertUserFileUntouched()
+        assertNoCopiesLeft()
+    }
+
+    @Test fun everyRetryAttemptGetsAFreshCopy() = runTest {
+        val paths = mutableListOf<String>()
+        val client = FakeClient(
+            execResults = ArrayDeque(listOf(threw(DRM_ERR), Result.success(ExecResult(0, "", "")))),
+            onCall = { call -> paths += File(call.options[call.options.indexOf("--cookies") + 1]).also { assertTrue(it.isFile) }.absolutePath },
+        )
+        engine(client).download("id1", "https://example.com/v", listOf("--cookies", master.absolutePath)).toList()
+        assertEquals(2, paths.size)
+        assertUserFileUntouched()
+        assertNoCopiesLeft()
+    }
+
+    @Test fun concurrentRunsDoNotShareAFile() = runBlocking {
+        val barrier = CyclicBarrier(2)
+        val seenPaths = CopyOnWriteArrayList<String>()
+        val client = FakeClient(onCall = { call ->
+            val f = File(call.options[call.options.indexOf("--cookies") + 1])
+            seenPaths += f.absolutePath
+            barrier.await(5, TimeUnit.SECONDS) // both runs are inside yt-dlp at once
+            assertTrue(f.isFile)
+        })
+        val e = YtDlpEngineImpl(client, FakeGithub(), io = Dispatchers.IO, cookiesScratchDir = scratch)
+        val args = listOf("--cookies", master.absolutePath)
+        withTimeout(10_000) {
+            listOf("a", "b").map { id -> async(Dispatchers.IO) { e.download(id, "https://example.com/$id", args).toList() } }.awaitAll()
+        }
+        assertEquals(2, seenPaths.toSet().size)
+        assertUserFileUntouched()
+        assertNoCopiesLeft()
+    }
+
+    @Test fun theCopyIsDeletedEvenWhenYtDlpThrows() = runTest {
+        val client = FakeClient(execResults = ArrayDeque(listOf(threw("ERROR: [youtube] abc: Video unavailable"))))
+        engine(client).download("id1", "https://example.com/v", listOf("--cookies", master.absolutePath)).toList()
+        assertNoCopiesLeft()
+        assertUserFileUntouched()
+    }
+
+    @Test fun aMissingCookiesFileIsPassedThroughForYtDlpToReport() = runTest {
+        val client = FakeClient()
+        val gone = File(dir, "gone.txt").absolutePath
+        engine(client).download("id1", "https://example.com/v", listOf("--cookies", gone)).toList()
+        val opts = client.calls.single().options
+        assertEquals(gone, opts[opts.indexOf("--cookies") + 1])
+        assertNoCopiesLeft()
+    }
+
+    @Test fun runsWithoutACookiesFileDoNotTouchTheScratchDir() = runTest {
+        val client = FakeClient()
+        engine(client).download("id1", "https://example.com/v", listOf("-f", "best")).toList()
+        assertFalse(scratch.exists())
+    }
+
+    @Test fun copiesLeftByADeadProcessAreSweptWhenTheEngineStarts() {
+        scratch.mkdirs()
+        File(scratch, "cookies-1-123.txt").writeText("stale")
+        engine(FakeClient())
+        assertNoCopiesLeft()
     }
 }

@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class YtdlpErrorsTest {
 
@@ -116,11 +117,25 @@ class YtdlpErrorsTest {
         }
     }
 
+    // Cookies.txt and the proxy exist on Android now (Settings → Network); browser cookies, a geo-bypass
+    // country, the About screen and OneDrive folders do not.
     @Test fun androidHintsNeverPointAtMissingSettings() {
-        val banned = listOf("firefox", "cookie", "proxy", "geo-bypass", "about", "engines", "onedrive")
+        val banned = listOf("firefox", "geo-bypass", "about", "engines", "onedrive")
         for (c in cases) {
             val s = YtdlpErrors.format(h(c.raw)).lowercase()
             for (b in banned) assertFalse(b in s, "'$b' in: $s")
+        }
+    }
+
+    @Test fun loginAndBlockHintsPointAtTheNetworkSettings() {
+        val loginHints = listOf(
+            "ERROR: confirm you're not a bot", "ERROR: confirm your age", "ERROR: members-only", "ERROR: Sign in required",
+        ).map { h(it).hint.orEmpty() }
+        for (hint in loginHints) {
+            assertTrue("cookies.txt" in hint && "Settings → Network → Cookies file" in hint, hint)
+        }
+        for (raw in listOf("ERROR: geo restricted", "ERROR: IP address is blocked")) {
+            assertTrue("proxy under Settings → Network" in h(raw).hint.orEmpty(), raw)
         }
     }
 
@@ -131,13 +146,13 @@ class YtdlpErrorsTest {
         assertEquals("Pick a different folder in Settings → Storage.", h("ERROR: [Errno 2] No such file").hint)
         assertEquals("Pick a different folder in Settings → Storage.", h("ERROR: [Errno 13] Permission denied").hint)
         assertNull(h("ERROR: DRM protected").hint)
-        val signIn = "Sieve for Android can't sign in to sites yet."
+        val signIn = "Import a cookies.txt from a signed-in browser under Settings → Network → Cookies file."
         assertEquals(signIn, h("ERROR: confirm you're not a bot").hint)
         assertEquals(signIn, h("ERROR: confirm your age").hint)
         assertEquals(signIn, h("ERROR: members-only").hint)
         assertEquals(signIn, h("ERROR: Sign in required").hint)
-        assertEquals("Try again on a different network or VPN.", h("ERROR: geo restricted").hint)
-        assertEquals("Try again later or switch network.", h("ERROR: IP address is blocked").hint)
+        assertEquals("Set a proxy under Settings → Network, or try another network.", h("ERROR: geo restricted").hint)
+        assertEquals("Try again later, or set a proxy under Settings → Network.", h("ERROR: IP address is blocked").hint)
         assertEquals("Wait a few minutes and retry.", h("ERROR: HTTP Error 429").hint)
         assertEquals("Retry, or update yt-dlp in Settings.", h("ERROR: HTTP Error 403").hint)
         assertEquals("Open the video itself and copy its address.", h("ERROR: Unsupported URL: x").hint)

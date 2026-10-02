@@ -20,16 +20,18 @@ data class HumanError(
  * required"), so:
  *  - URLs are blanked before matching (they are echoed in many errors and can hold any word, e.g.
  *    `.../login-tips-video` or a video id containing `429`);
- *  - when the output has `ERROR:` lines only those are matched — Android downloads do not pass
- *    `--no-warnings`, and a WARNING line must never decide the verdict.
+ *  - when the output has `ERROR:` lines only those are matched — a WARNING line must never decide
+ *    the verdict (downloads pass `--no-warnings` as on desktop, but analyze keeps its warnings).
  *
- * Android differs from desktop in the hints only: there are no cookies / proxy / geo-bypass settings,
- * so nothing here points at them. The desktop browser-cookies rule is dropped, and the engine-start
- * rule matches the youtubedl-android library's failure phrasing instead of Node's `spawn ENOENT`.
+ * Android differs from desktop in the hints only: they point at the settings Android has —
+ * Settings → Network → Cookies file (a cookies.txt import; there are no browser cookies) and the
+ * Proxy row (there is no geo-bypass country). The desktop browser-cookies rule is dropped, and the
+ * engine-start rule matches the youtubedl-android library's failure phrasing instead of Node's
+ * `spawn ENOENT`.
  */
 object YtdlpErrors {
 
-    private const val SIGN_IN_HINT = "Sieve for Android can't sign in to sites yet."
+    private const val SIGN_IN_HINT = "Import a cookies.txt from a signed-in browser under Settings → Network → Cookies file."
     private const val STORAGE_HINT = "Pick a different folder in Settings → Storage."
 
     private val IC = RegexOption.IGNORE_CASE
@@ -85,13 +87,13 @@ object YtdlpErrors {
         rule(
             "(?:available|blocked(?: it)?) in your (?:country|region)|\\bin your (?:country|region)\\b|" +
                 "geo[- ]?restrict|not available from your location|HTTP Error 451",
-            HumanError(ErrorKind.GEO, "Not available in your region", "Try again on a different network or VPN."),
+            HumanError(ErrorKind.GEO, "Not available in your region", "Set a proxy under Settings → Network, or try another network."),
         ),
         rule(
             "IP address is blocked",
             HumanError(
                 ErrorKind.BLOCKED, "The site is blocking requests from your network right now",
-                "Try again later or switch network.",
+                "Try again later, or set a proxy under Settings → Network.",
             ),
         ),
         rule(
