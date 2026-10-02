@@ -31,6 +31,11 @@ fun rememberAppSnackbarHost(): SnackbarHostState {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // Messages from screens that have no Scaffold of their own (the Android 17 local-network prompt's answer): see SnackbarMessages.
+    LaunchedEffect(Unit) {
+        SnackbarMessages.flow.collect { m -> scope.launch { host.showMessage(m) } }
+    }
+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
         LaunchedEffect(Unit) {

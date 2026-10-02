@@ -2,7 +2,10 @@ package com.sieve.engine.parse
 
 /** What went wrong, coarsely. Mirrors the desktop `ErrorKind` minus `cookies` (no browser cookies on Android). */
 enum class ErrorKind {
-    DRM, LOGIN, PRIVATE, REMOVED, GEO, BLOCKED, RATE, UNSUPPORTED, NOVIDEO, FORMAT, DISK, NETWORK, OTHER,
+    DRM, LOGIN, PRIVATE, REMOVED, GEO, BLOCKED, RATE, UNSUPPORTED, NOVIDEO, FORMAT, DISK, NETWORK,
+    /** Android 17 only: the link or proxy is on the local network and the app has not been given that access. */
+    LOCAL_NETWORK,
+    OTHER,
 }
 
 /** A yt-dlp failure a person can act on. [transient] = worth one automatic retry. */
@@ -34,6 +37,18 @@ object YtdlpErrors {
     private const val SIGN_IN_HINT = "Import a cookies.txt from a signed-in browser under Settings → Network → Cookies file."
     private const val STORAGE_HINT = "Pick a different folder in Settings → Storage."
 
+    /**
+     * The wording of the failure the queue writes when a download of a LAN link (or through a LAN proxy) fails while Android 17's
+     * local-network permission is missing (see [com.sieve.engine.site.LocalNetwork]): the OS drops those connections, yt-dlp only
+     * sees a timeout, and the user has to be told the real cause. [localNetworkBlocked] builds the text, the first rule below reads it.
+     */
+    private const val LOCAL_NETWORK_BLOCKED = "Sieve is not allowed to reach devices on your local network"
+    private const val LOCAL_NETWORK_HINT = "Allow Nearby devices for Sieve in Settings → Apps → Sieve → Permissions, then retry."
+
+    /** The raw error line for a download that Android blocked: ERROR-prefixed like yt-dlp's own lines, with the host for the log. */
+    fun localNetworkBlocked(host: String?): String =
+        "ERROR: $LOCAL_NETWORK_BLOCKED" + host?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
+
     private val IC = RegexOption.IGNORE_CASE
     private val URL_RE = Regex("https?://\\S+", IC)
     private val LINE_BREAK = Regex("\\r?\\n")
@@ -43,6 +58,11 @@ object YtdlpErrors {
     private fun rule(pattern: String, error: HumanError) = Rule(Regex(pattern, IC), error)
 
     private val RULES: List<Rule> = listOf(
+        // Our own text, written by the queue (not yt-dlp's), so it goes first: whatever else the log says, this is the cause.
+        rule(
+            LOCAL_NETWORK_BLOCKED,
+            HumanError(ErrorKind.LOCAL_NETWORK, "Sieve can't reach your local network", LOCAL_NETWORK_HINT),
+        ),
         rule(
             "instance not initialized|failed to initialize|cannot run program|error=(?:2|13)\\b",
             HumanError(

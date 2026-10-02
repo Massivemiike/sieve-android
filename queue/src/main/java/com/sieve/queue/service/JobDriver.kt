@@ -1,7 +1,9 @@
 package com.sieve.queue.service
 
+import com.sieve.engine.parse.ErrorKind
 import com.sieve.engine.parse.YtdlpErrors
 import com.sieve.engine.repo.EngineEvent
+import com.sieve.engine.site.LocalNetwork
 import com.sieve.queue.core.CancelReason
 import com.sieve.queue.core.FailureInfo
 import com.sieve.queue.core.JobSignal
@@ -25,10 +27,14 @@ import kotlinx.coroutines.flow.flow
  * before killing, so it is present by the time Cancelled/Done arrives. For a transcode the reason is
  * checked BEFORE the exit code: Cancel/Pause asks ffmpeg to quit with `q`, which it treats as a normal
  * stop — it finalizes the truncated output and exits 0, which must not read as a finished job.
+ *
+ * A download that fails while the OS is blocking the local network (Android 17, see [LocalNetworkGuard]) is reported as
+ * that, not as the timeout yt-dlp saw: the retry rules then leave it alone and the user is told which permission to turn on.
  */
 class JobDriver(
     private val downloadPort: DownloadPort,
     private val transcodePort: TranscodePort,
+    private val localNetwork: LocalNetworkGuard = LocalNetworkGuard.None,
 ) {
     fun drive(job: QueueJob, cancelReasonSupplier: () -> CancelReason?): Flow<JobSignal> = when (val spec = job.spec) {
         is JobSpec.Download -> driveDownload(job, spec, cancelReasonSupplier)
@@ -53,13 +59,13 @@ class JobDriver(
                     emit(
                         JobSignal.Terminal(
                             job.id,
-                            if (ev.exitCode == 0) Outcome.Succeeded else Outcome.Failed(downloadFailure(ev.exitCode, errorBlob)),
+                            if (ev.exitCode == 0) Outcome.Succeeded else Outcome.Failed(blockedByLocalNetwork(spec, downloadFailure(ev.exitCode, errorBlob))),
                         ),
                     )
                 }
                 is EngineEvent.Failed -> {
                     terminated = true
-                    emit(JobSignal.Terminal(job.id, Outcome.Failed(FailureInfo(ev.error))))
+                    emit(JobSignal.Terminal(job.id, Outcome.Failed(blockedByLocalNetwork(spec, FailureInfo(ev.error)))))
                 }
                 EngineEvent.Cancelled -> {
                     terminated = true
@@ -82,6 +88,30 @@ class JobDriver(
             .take(500)
             .ifBlank { "yt-dlp exited $exitCode" }
         return FailureInfo(message = message, exitCode = exitCode, stderrTail = text.takeLast(4000).ifEmpty { null })
+    }
+
+    /**
+     * [info] itself, unless the guard says the OS is dropping this download's connections AND the failure is the kind a dropped
+     * connection produces (a timeout / network error, or text the rule table does not know). A failure the site answered (403,
+     * private, geo, removed, a full disk, ...) proves the connection worked and stays as it was. The original text is kept in
+     * [FailureInfo.stderrTail] for the diagnostics; the message is the sentence [YtdlpErrors] turns into the permission hint.
+     */
+    private suspend fun blockedByLocalNetwork(spec: JobSpec.Download, info: FailureInfo): FailureInfo {
+        val blocked = try {
+            localNetwork.blocks(spec.url, spec.engineArgs)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            false // a permission lookup that fails must never change the verdict of a failed download
+        }
+        if (!blocked) return info
+        val kind = YtdlpErrors.humanize(listOfNotNull(info.message, info.stderrTail).joinToString("\n")).kind
+        if (kind != ErrorKind.NETWORK && kind != ErrorKind.OTHER) return info
+        val host = LocalNetwork.hostOf(LocalNetwork.proxyOfArgs(spec.engineArgs)) ?: LocalNetwork.hostOf(spec.url)
+        return info.copy(
+            message = YtdlpErrors.localNetworkBlocked(host),
+            stderrTail = (info.stderrTail ?: info.message).takeLast(4000),
+        )
     }
 
     private fun driveTranscode(job: QueueJob, spec: JobSpec.Transcode, reason: () -> CancelReason?): Flow<JobSignal> = flow {

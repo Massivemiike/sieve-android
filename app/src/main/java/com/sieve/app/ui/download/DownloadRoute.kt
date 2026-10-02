@@ -51,6 +51,7 @@ import com.sieve.app.ui.common.ChipKind
 import com.sieve.app.ui.common.EmptyState
 import com.sieve.app.ui.common.SectionLabel
 import com.sieve.app.ui.common.SieveChip
+import com.sieve.app.ui.common.rememberLocalNetworkPrompt
 import com.sieve.app.ui.theme.MonoFamily
 import com.sieve.engine.model.VideoInfo
 
@@ -66,12 +67,14 @@ fun DownloadRoute(
             com.sieve.app.ui.common.SharedUrlBus.consume()
         }
     }
+    // --- sdk37: local network --- a link (or proxy) on the LAN needs Android 17's Nearby devices permission before it is read or queued.
+    val localNetwork = rememberLocalNetworkPrompt()
     DownloadScreen(
         state = state,
         onUrlChange = vm::onUrlChange,
-        onAnalyze = vm::analyze,
+        onAnalyze = { localNetwork.runWith(state.url, vm::analyze) },
         onSelectPreset = vm::selectPreset,
-        onDownload = vm::download,
+        onDownload = { localNetwork.runWith(state.url, vm::download) },
     )
 }
 

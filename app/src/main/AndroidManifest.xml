@@ -3,6 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Android 17 (targetSdk 37): an app can only reach the local network (a NAS or media-server link, a .local name, a proxy on
+         192.168.x.x) once the user grants this runtime permission (group NEARBY_DEVICES). It is asked for when a link or proxy on
+         the LAN is about to be used (LocalNetworkPrompt), never at launch. Unknown, and inert, below Android 17.
+         It belongs here only while targetSdk is 37 or higher (ManifestPermissionsTest keeps the two together). -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

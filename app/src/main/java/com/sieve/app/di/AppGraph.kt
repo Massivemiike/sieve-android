@@ -8,10 +8,15 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.room.Room
+import com.sieve.app.net.HostLookup
+import com.sieve.app.net.LocalNetworkAccess
+import com.sieve.app.net.LocalNetworkGate
+import com.sieve.app.net.OnLinkNetworks
 import com.sieve.app.settings.AppPrefs
 import com.sieve.app.settings.AppSettings
 import com.sieve.app.settings.CookiesStore
 import com.sieve.app.settings.DataStoreRestoreHoldStore
+import com.sieve.app.settings.NetworkSettings
 import com.sieve.data.db.SieveDatabase
 import com.sieve.engine.EngineInit
 import com.sieve.engine.repo.YoutubeDLClientImpl
@@ -62,6 +67,15 @@ object AppGraph {
     lateinit var ffmpegBinaryPath: String; private set
     var ffmpegEncodersStdout: String = ""; private set
 
+    // --- sdk37: local network ---
+    /**
+     * Android 17 (targetSdk 37) drops connections to the local network until `ACCESS_LOCAL_NETWORK` is granted. The Download
+     * screen asks for it before it reads or queues a LAN link ([LocalNetworkGate.needsPermission]); the queue's job driver names it
+     * as the cause when a LAN download fails without it ([LocalNetworkGate.guard]). Always "allowed" below Android 17.
+     */
+    lateinit var localNetwork: LocalNetworkGate; private set
+    // --- end sdk37: local network ---
+
     private lateinit var appContext: Context
     private lateinit var sourceCopies: SourceCopies
 
@@ -111,13 +125,20 @@ object AppGraph {
         sweepOrphanedSources(ioScope, persistence)
         val output = StorageModule.provideOutputLocationProvider(app, prefs)
 
+        // --- sdk37: local network --- the proxy is read lazily (a suspend DataStore read), never during init.
+        localNetwork = LocalNetworkGate(
+            granted = { LocalNetworkAccess.isGranted(app) },
+            proxy = { NetworkSettings.normalizeProxy(appSettings.flow.first().proxy) },
+            resolve = HostLookup()::addresses,
+            onLink = OnLinkNetworks.of(app)::isOnLink,
+        )
         val dlPort = RealDownloadPort(engine)
         val txPort = RealTranscodePort(ffmpegBinaryPath)
         // Start from the persisted caps (not the 3/1 defaults) so a restart-time drain already obeys them,
         // then follow later changes so the Settings steppers apply without an app restart.
         val initialPrefs = runCatching { runBlocking { appSettings.flow.first() } }.getOrDefault(AppPrefs())
         val manager = QueueManager(
-            JobDriver(dlPort, txPort), dlPort, txPort, persistence, output, SystemClock(),
+            JobDriver(dlPort, txPort, localNetwork.guard), dlPort, txPort, persistence, output, SystemClock(),
             initial = QueueState(maxDownloads = initialPrefs.maxDownloads, maxTranscodes = initialPrefs.maxTranscodes),
             // "Downloaded / Transcoded / Failed: <title>"; postDone never throws and skips quietly without the permission.
             onCompleted = { QueueNotification.postDone(app, it) },
