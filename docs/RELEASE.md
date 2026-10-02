@@ -82,9 +82,11 @@ Before any public APK is distributed, ALL of the following must be true:
       mutagen), QuickJS and yt-dlp, each with its source URL and SHA-256. Mirror those archives next
       to the APK (upstream URLs can disappear) or be ready to serve them on request.
 - [ ] When `youtubedl-android` or an `ffbuild.sh` pin changes: update `FFMPEG_SOURCE.txt` (Part 2
-      versions come from the Termux recipes at the commit it names), `ENGINE_NOTICES.txt`, and run
-      `bash transcode/build-ffmpeg/codec-licenses.sh` (it refuses to run if a pin moved).
-      `LicenseAssetsTest` fails if the offer or the codec notice no longer matches the build files.
+      versions come from the Termux recipes at the commit it names), `ENGINE_NOTICES.txt`, the
+      offer block in `site/index.html` (it repeats the pins, the library tag and the configure line),
+      and run `bash transcode/build-ffmpeg/codec-licenses.sh` (it refuses to run if a pin moved).
+      `LicenseAssetsTest` fails if the offer, the site's copy of it or the codec notice no longer
+      matches the build files.
 - [ ] The FFmpeg `./configure` flags are documented and reproducible (see
       `transcode/build-ffmpeg/ffbuild.sh`) — built **full-gpl**, **never** `--enable-nonfree`.
 - [ ] Full license texts ship **in-app** (Settings → About → Licenses: GPLv3, yt-dlp Unlicense,

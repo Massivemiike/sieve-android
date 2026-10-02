@@ -501,7 +501,8 @@ HOW TO GET THE SOURCE
 =====================
 
 The upstream locations above are the corresponding source. If one is no longer available, or you would rather
-receive the source another way, ask the Sieve for Android project (the repository this file is in) and it will
-be provided.
+receive the source another way, ask the Sieve for Android project and it will be provided. Open an issue at
+https://github.com/Massivemiike/sieve-android/issues saying which Sieve version you have and which parts you
+want. The same offer is on the download page for the APK.
 
 This written offer is valid for three (3) years from the date of distribution of the corresponding binary.

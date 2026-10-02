@@ -14,6 +14,7 @@ import kotlin.test.assertTrue
 class LicenseAssetsTest {
     private val assets = File("src/main/assets/licenses")
     private val mirrors = File("../licenses")
+    private val issuesUrl = "https://github.com/Massivemiike/sieve-android/issues"
 
     private fun text(f: File): String {
         assertTrue(f.isFile, "missing ${f.path}")
@@ -86,6 +87,48 @@ class LicenseAssetsTest {
             val sha = Regex("(?m)^${v}_SHA256=([0-9a-f]{64})$").find(script)!!.groupValues[1]
             assertTrue(sha in codecs, "CODEC_LICENSES.txt was not regenerated for $v $ver (sha256 $sha): run transcode/build-ffmpeg/codec-licenses.sh")
         }
+    }
+
+    @Test fun theOfferSaysWhereToAskForTheSource() {
+        // "Ask the project" is no offer without a way to ask.
+        assertTrue(issuesUrl in asset("FFMPEG_SOURCE.txt"), "the written offer must give an address to ask at: $issuesUrl")
+    }
+
+    /** The download page is where the APK is primarily distributed, so it carries the same offer as the app. */
+    private val site get() = text(File("../site/index.html"))
+
+    @Test fun theDownloadPageOfferNamesEverythingTheAppsOfferDoes() {
+        val offer = asset("FFMPEG_SOURCE.txt")
+        val script = text(File("../transcode/build-ffmpeg/ffbuild.sh"))
+        val page = site
+        // Part 1: every pinned commit and tarball hash, and every flag of the real configure line.
+        val pins = Regex("(?m)^[A-Z0-9]+_(?:COMMIT|SHA256)=([0-9a-f]{40,64})$").findAll(script).map { it.groupValues[1] }.toList()
+        for (pin in pins) assertTrue(pin in page, "ffbuild.sh pins $pin but the download page's offer does not name it")
+        val flags = Regex("--enable-(?:lib[a-z0-9]+|gpl|version3|jni|mediacodec)").findAll(script).map { it.value }.toSet()
+        assertTrue(flags.size >= 10, "expected the configure flags in ffbuild.sh, found $flags")
+        for (flag in flags) assertTrue(flag in page, "the download page's configure line lacks $flag")
+        // Part 2: the library tag, the Termux recipes, QuickJS.
+        val gradle = text(File("../engine/build.gradle.kts"))
+        val version = Regex("youtubedl-android:library:([0-9.]+)").find(gradle)!!.groupValues[1]
+        val tagCommit = Regex("Tag: +$version = commit ([0-9a-f]{40})").find(offer)!!.groupValues[1]
+        val termuxCommit = Regex("termux-packages +commit ([0-9a-f]{40})").find(offer)!!.groupValues[1]
+        val quickJs = Regex("quickjs-[0-9-]+\\.tar\\.xz\\s+sha256: +([0-9a-f]{64})").find(offer)!!.groupValues[1]
+        for (needed in listOf(version, tagCommit, termuxCommit, quickJs, "GNU Readline", "mutagen", "Termux", "QuickJS", "yt-dlp")) {
+            assertTrue(needed in page, "the download page's offer does not mention $needed")
+        }
+        // Part 3, the three-year term, and somewhere to ask.
+        assertTrue("curl-impersonate" in page && "build-impersonate/build.sh" in page, "the download page's offer must cover the impersonation bundle")
+        assertTrue("three (3) years" in page, "the download page must state the three-year term")
+        assertTrue(issuesUrl in page, "the download page must say where to ask for the source")
+    }
+
+    @Test fun theDownloadPageLinksEveryNoticeFileAndTheyExist() {
+        val page = site
+        val linked = Regex("https://github\\.com/Massivemiike/sieve-android/blob/main/([A-Za-z0-9_./-]+\\.txt)").findAll(page).map { it.groupValues[1] }.toSet()
+        for (name in listOf("FFMPEG_SOURCE.txt", "CODEC_LICENSES.txt", "ENGINE_NOTICES.txt", "COPYLEFT_TEXTS.txt", "IMPERSONATE_LICENSES.txt")) {
+            assertTrue(linked.any { it.endsWith("/$name") }, "the download page does not link $name")
+        }
+        for (path in linked) assertTrue(File("..", path).isFile, "the download page links $path, which is not in the repository")
     }
 
     @Test fun theReadmeDoesNotOverclaimWhatShips() {
