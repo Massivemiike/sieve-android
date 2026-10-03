@@ -53,6 +53,18 @@ object QueueNotification {
 
     fun requestCode(id: String, action: NotifAction) = id.hashCode() * 31 + action.ordinal
 
+    /**
+     * The verb of the running title ("<verb> 1 of 3"). It names the work only when every counted job is that kind,
+     * so the verb is true of the whole "of M": all downloads read "Downloading" (as ever), all transcodes
+     * "Transcoding" (the Queue chip's word), and a mix of the two the neutral "Working on". [live] always holds the
+     * running job, so it is never empty.
+     */
+    private fun runningVerb(live: List<QueueJob>): String = when {
+        live.all { it.kind == JobKind.DOWNLOAD } -> "Downloading"
+        live.all { it.kind == JobKind.TRANSCODE } -> "Transcoding"
+        else -> "Working on"
+    }
+
     /** Pure mapping from queue state to the notification content. */
     fun render(state: QueueState): NotifModel {
         val sum = QueueAggregator.summarize(state.jobs)
@@ -68,7 +80,7 @@ object QueueNotification {
                 val live = state.jobs.filter { it.status in IN_PROGRESS }
                 val runningIdx = 1 + live.indexOfFirst { it.id == active.id }.coerceAtLeast(0)
                 NotifModel(
-                    title = "Downloading $runningIdx of ${live.size}",
+                    title = "${runningVerb(live)} $runningIdx of ${live.size}",
                     text = "${active.title.ifBlank { "Item" }} · $pct%",
                     progress = pct, indeterminate = frac == null,
                     actions = listOf(NotifAction.PAUSE, NotifAction.CANCEL), actionTargetId = active.id,
