@@ -33,11 +33,14 @@ import java.util.concurrent.atomic.AtomicReference
  *    `frame=0 out_time=N/A` blocks and floods the log. Time is counted in watchdog ticks, so a stretch in which the
  *    whole app was frozen by the OS is not counted either. A stalled hardware run falls back (below); a stalled CPU
  *    run ends [TranscodeEvent.Done] with [EXIT_STALLED] and [STALL_SUMMARY].
- *    A run whose VIDEO ENCODER is MediaCodec gets a shorter bound for its FIRST advance only: none at all within
- *    [Limits.firstProgressTimeoutMs] ([FIRST_PROGRESS_TIMEOUT_MS]) of the spawn is a stall too, because MediaCodec runs that
- *    work advance within a second or two and a codec service that died under ffmpeg before its first frame would
- *    otherwise cost the whole [STALL_TIMEOUT_MS] before the CPU fallback. From the first advance on the ordinary bound
- *    applies again, and CPU runs (and the retry, which is one) never get the short bound ([expectsPromptFirstProgress]).
+ *    A run whose VIDEO ENCODER is MediaCodec gets a shorter bound for its FIRST FRAME only: no out_time, no frame count
+ *    beyond zero and no end block ([ProgressWatch.mediaAdvanced]) within [Limits.firstProgressTimeoutMs]
+ *    ([FIRST_PROGRESS_TIMEOUT_MS]) of the spawn is a stall too, because MediaCodec runs that work produce their first frame
+ *    within a second or two and a codec service that died under ffmpeg before its first frame or packet would otherwise
+ *    cost the whole [STALL_TIMEOUT_MS] before the CPU fallback. The muxer header's `total_size` and repeated start-up blocks
+ *    do not count as a first frame, so a hang with ffmpeg still printing `frame=0 out_time=N/A` is caught too. From the
+ *    first frame on the ordinary bound applies again, and CPU runs (and the retry, which is one) never get the short bound
+ *    ([expectsPromptFirstProgress]).
  *  - *The pipes.* The readers are NOT children of the run: after the process is gone they get [Limits.readerDrainMs] to
  *    finish and are then abandoned (a blocking `read(2)` cannot be cancelled), so a pipe that never reaches EOF cannot hold
  *    the run, the queue slot or the foreground service.
@@ -186,8 +189,12 @@ class FfmpegRunner(
     }
 
     /**
-     * The exit code, and whether the watchdog had to stop the process to get it. A [promptFirstProgress] run is held to
-     * [Limits.firstProgressTimeoutMs] until its first advance; every other stretch of quiet is held to [Limits.stallTimeoutMs].
+     * The exit code, and whether the watchdog had to stop the process to get it. Two bounds, both counted in ticks:
+     *  - quiet for [Limits.stallTimeoutMs]: no [ProgressWatch.version] change (any advance, the output size included);
+     *  - a [promptFirstProgress] run with no MEDIA progress ([ProgressWatch.mediaAdvanced]: an out_time, a frame or the end
+     *    block) [Limits.firstProgressTimeoutMs] after the SPAWN. Measured from the spawn and not from the last advance, and
+     *    not cleared by the output size: ffmpeg's muxer header alone makes `total_size` non-zero, and a codec that is open
+     *    but wedged still prints `frame=0 total_size=<header> out_time=N/A` blocks every half second.
      */
     private suspend fun awaitExitOrStall(
         process: FfmpegProcess,
@@ -196,11 +203,13 @@ class FfmpegRunner(
         promptFirstProgress: Boolean,
     ): Pair<Int, Boolean> {
         var quietMs = 0L
+        var sinceSpawnMs = 0L
         var seen = watch.version
         while (true) {
             // One tick per wait: counted, not measured, so a frozen app does not add up to a stall.
             val code = withTimeoutOrNull(limits.stallCheckMs) { exit.await() }
             if (code != null) return code to false
+            sinceSpawnMs += limits.stallCheckMs
             val now = watch.version
             if (now != seen) {
                 seen = now
@@ -208,8 +217,8 @@ class FfmpegRunner(
             } else {
                 quietMs += limits.stallCheckMs
             }
-            val bound = if (promptFirstProgress && !watch.advanced) minOf(limits.firstProgressTimeoutMs, limits.stallTimeoutMs) else limits.stallTimeoutMs
-            if (quietMs >= bound) {
+            val noFirstFrame = promptFirstProgress && !watch.mediaAdvanced && sinceSpawnMs >= limits.firstProgressTimeoutMs
+            if (noFirstFrame || quietMs >= limits.stallTimeoutMs) {
                 cancel(process, limits.stallQuitGraceMs, limits.stallTermGraceMs)
                 return (withTimeoutOrNull(limits.reapWaitMs) { exit.await() } ?: EXIT_STALLED) to true
             }
@@ -252,20 +261,25 @@ class FfmpegRunner(
          * speed (`-stats_period`), and out_time / frame advance with every packet the muxer writes, so even AV1 4K at 0.1x
          * advances every few seconds. The slow places are the ones before the first packet (probing, filter and encoder
          * start-up, the encoder's look-ahead: tens of seconds for a 4K software encode on a phone) and after the last
-         * (the `+faststart` rewrite of a multi-GB output): two minutes covers them with room to spare, and the hang this
-         * exists for costs two minutes before the CPU fallback, with Cancel ending it at any time. Hardware runs of the
-         * same clip take seconds.
+         * (the `+faststart` rewrite of a multi-GB output): two minutes covers them with room to spare. It is the bound for a
+         * hang after progress began and for every software run (a hang costs two minutes before the CPU fallback, with Cancel
+         * ending it at any time); a MediaCodec encode that has not produced its first frame is held to the much shorter
+         * [FIRST_PROGRESS_TIMEOUT_MS] instead. Hardware runs of the same clip take seconds.
          */
         const val STALL_TIMEOUT_MS = 120_000L
 
         /**
-         * A run whose video encoder is MediaCodec ([expectsPromptFirstProgress]) that has not advanced AT ALL this long after its spawn is
-         * stalled, so the CPU fallback starts after about 20 s instead of [STALL_TIMEOUT_MS]. Measured on the S26 (signed
-         * 1.0.4, five H.264 720p MediaCodec runs of a 19 s clip): four took 0.7-0.8 s from start to saved file, so their first
-         * `-progress` block came in well under a second; the fifth hung in the Qualcomm codec service, printed nothing that
-         * advanced, and the 120 s watchdog killed it 121 s after its start. 20 s is more than 20x the healthy figure (slow
-         * storage, a cold codec service and a busy phone included) and about a sixth of what the hang cost. It is NOT a bound
-         * for software encodes: those can take tens of seconds before their first packet (see [STALL_TIMEOUT_MS]).
+         * A run whose video encoder is MediaCodec ([expectsPromptFirstProgress]) that has not produced its first frame this long
+         * after its spawn ([ProgressWatch.mediaAdvanced]: no out_time, no frame count, no end block; the muxer header's
+         * `total_size` does not count) is stalled, so the CPU fallback starts after about 20 s instead of [STALL_TIMEOUT_MS].
+         * Measured on the S26 (signed 1.0.4, five H.264 720p MediaCodec runs of a 19 s clip): four took 0.7-0.8 s from start to
+         * saved file, so their first frames came in well under a second; the fifth hung in the Qualcomm codec service and the
+         * 120 s watchdog killed it 121 s after its start. That the hung run showed no media progress at all is inferred: the
+         * logcat has only the SIGKILL line, and the 121 s is a polled notification timestamp. Whether it printed nothing or
+         * kept printing `frame=0 total_size=<header> out_time=N/A` blocks is not known, which is why the bound waits for a
+         * frame or an out_time and not for any output. 20 s is more than 20x the healthy figure (slow storage, a cold codec
+         * service and a busy phone included) and about a sixth of what the hang cost. It is NOT a bound for software
+         * encodes: those can take tens of seconds before their first packet (see [STALL_TIMEOUT_MS]).
          */
         const val FIRST_PROGRESS_TIMEOUT_MS = 20_000L
 
@@ -374,7 +388,12 @@ class FfmpegRunner(
  * Whether ffmpeg's `-progress` is MOVING, as opposed to merely printing. A block counts when out_time, the frame count or
  * the output size is beyond everything seen so far; the start-up blocks (`frame=0`, `out_time=N/A`) and a block that
  * repeats its predecessor do not, which is how a codec wedged under a still-printing ffmpeg is told from a slow encode.
- * Written by the stdout reader, read by the watchdog: only [version] is shared.
+ *
+ * Two readings of the same blocks: [version] changes on ANY advance (what the two-minute watchdog is quiet about), and
+ * [mediaAdvanced] only when the MEDIA moved (what the first-progress bound waits for). They differ by the output size: the
+ * muxer header can make `total_size` non-zero (48 bytes has been seen) before a single frame has been encoded, so a block
+ * `frame=0 total_size=48 out_time=N/A` moves [version] once and is not [mediaAdvanced].
+ * Written by the stdout reader, read by the watchdog: only [version] and [mediaAdvanced] are shared.
  */
 internal class ProgressWatch {
     private var bestOutUs = 0L
@@ -382,19 +401,23 @@ internal class ProgressWatch {
     private var bestSize = 0L
     private val moves = AtomicLong(0)
 
+    @Volatile private var media = false
+
     /** Changes whenever the progress advanced. */
     val version: Long get() = moves.get()
 
-    /** Whether it has advanced at all since the run began. */
-    val advanced: Boolean get() = moves.get() > 0
+    /** Whether the media itself has advanced since the run began: an out_time or a frame count beyond zero, or the end block. */
+    val mediaAdvanced: Boolean get() = media
 
     fun observe(p: FfmpegProgress) {
         var moved = p.isEnd
-        if (p.outTimeUs > bestOutUs) { bestOutUs = p.outTimeUs; moved = true }
+        var mediaMoved = p.isEnd
+        if (p.outTimeUs > bestOutUs) { bestOutUs = p.outTimeUs; moved = true; mediaMoved = true }
         val frame = p.frame
-        if (frame != null && frame > bestFrame) { bestFrame = frame; moved = true }
+        if (frame != null && frame > bestFrame) { bestFrame = frame; moved = true; mediaMoved = true }
         val size = p.totalSize
         if (size != null && size > bestSize) { bestSize = size; moved = true }
+        if (mediaMoved) media = true
         if (moved) moves.incrementAndGet()
     }
 }

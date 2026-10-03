@@ -90,6 +90,14 @@ private fun progress(outUs: Long, frame: Long? = null, size: Long? = null) = bui
     append("out_time_us=$outUs\nprogress=continue\n")
 }
 
+/**
+ * ffmpeg 8.1's `-progress` block while the encoder is open and has produced nothing: the muxer header is written (total_size is not zero),
+ * no frame has come out, out_time is N/A. Verbatim from the ffmpeg 8.1 line, with the fields the parser ignores.
+ */
+private const val HEADER_ONLY_BLOCK =
+    "frame=0\nfps=0.00\nstream_0_0_q=0.0\nbitrate=N/A\ntotal_size=48\nout_time_us=N/A\nout_time_ms=N/A\nout_time=N/A\n" +
+        "dup_frames=0\ndrop_frames=0\nspeed=N/A\nprogress=continue\n"
+
 /** The watchdog, the hardware fallback, the cancel path and the log guard of [FfmpegRunner], against processes that misbehave. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class FfmpegRunnerStallTest {
@@ -251,6 +259,95 @@ class FfmpegRunnerStallTest {
         assertEquals(1, hung.destroyForciblyCount)
         assertEquals(0, done(ev).exitCode)
         assertEquals("Hardware codec stopped making progress, retrying on software encoder", ev.filterIsInstance<TranscodeEvent.Log>().single().line)
+    }
+
+    @Test fun `a hardware run that keeps printing the muxer's header block is stalled at the first-progress bound, not after two minutes`() =
+        runTest(timeout = 30.seconds) {
+            // The codec is open but wedged, and ffmpeg's main thread keeps printing frame=0 / out_time=N/A blocks that carry the header's total_size.
+            // Their size is "beyond everything seen" once, so the old reading ended the short bound at the first block.
+            val hung = HungProcess(stdout = flow { while (true) { delay(500); emit(HEADER_ONLY_BLOCK) } })
+            val ok = ScriptedProcess(stdout = flowOf2(progress(9_000_000)), exitAfterMs = 10)
+            val fac = QueueFactory(listOf(hung, ok))
+            val events = async { FfmpegRunner(fac, "/x").run(hwJob()).toList() }
+
+            advanceTimeBy(FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS - 1_000)
+            runCurrent()
+            assertEquals("not stopped before the bound", 1, fac.calls.size)
+            assertEquals(0, hung.destroyForciblyCount)
+
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertTrue("done long before the two-minute watchdog would have fired (at ${currentTime} ms)", events.isCompleted)
+            val ev = events.await()
+            assertEquals(2, fac.calls.size)
+            assertEquals(1, hung.destroyForciblyCount)
+            assertTrue(fac.calls[1].contains("libx264"))
+            assertEquals(0, done(ev).exitCode)
+            assertEquals(
+                listOf("Hardware codec stopped making progress, retrying on software encoder"),
+                ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+            )
+        }
+
+    @Test fun `the first-progress bound is counted from the spawn, a header block late in it does not restart it`() = runTest(timeout = 30.seconds) {
+        val hung = HungProcess(stdout = flow { delay(19_500); emit(HEADER_ONLY_BLOCK); awaitCancellation() })
+        val fac = QueueFactory(listOf(hung, ScriptedProcess(exitAfterMs = 10)))
+        val events = async { FfmpegRunner(fac, "/x").run(hwJob()).toList() }
+        advanceTimeBy(FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS + 5_000)
+        runCurrent()
+        assertTrue("stopped at about 20 s from the spawn, not 120 s from the block (at ${currentTime} ms)", events.isCompleted)
+        assertEquals(2, fac.calls.size)
+        assertEquals(1, hung.destroyForciblyCount)
+    }
+
+    @Test fun `a hardware run whose header block is followed by a first frame keeps the two-minute bound after it`() = runTest(timeout = 30.seconds) {
+        // Header block at 0.5 s (not progress), a first frame at 1.5 s (progress), then the codec dies: that is a mid-run stall.
+        val firstFrame = "frame=1\nfps=0.00\ntotal_size=2048\nout_time_us=N/A\nprogress=continue\n"
+        val hung = HungProcess(stdout = flow { delay(500); emit(HEADER_ONLY_BLOCK); delay(1_000); emit(firstFrame); awaitCancellation() })
+        val fac = QueueFactory(listOf(hung, ScriptedProcess(stdout = flowOf2(progress(9_000_000)), exitAfterMs = 10)))
+        val events = async { FfmpegRunner(fac, "/x").run(hwJob()).toList() }
+
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS) // 118.5 s of silence since the frame
+        runCurrent()
+        assertEquals("a mid-run stall is not held to the first-progress bound (at ${currentTime} ms)", 1, fac.calls.size)
+        assertEquals(0, hung.destroyForciblyCount)
+
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue(events.isCompleted)
+        assertEquals(2, fac.calls.size)
+        assertEquals(1, hung.destroyForciblyCount)
+        assertEquals(0, done(events.await()).exitCode)
+    }
+
+    @Test fun `a hardware run whose first frame comes at 15 s, behind header blocks, is left alone`() = runTest(timeout = 30.seconds) {
+        val blocks = flow {
+            delay(500); emit(HEADER_ONLY_BLOCK)
+            delay(14_500); emit(progress(1_000_000, frame = 3, size = 4_096))
+            delay(1_000); emit(progress(2_000_000, frame = 40, size = 8_192))
+        }
+        val p = ScriptedProcess(stdout = blocks, exitAfterMs = 17_000)
+        val fac = QueueFactory(listOf(p))
+        val ev = FfmpegRunner(fac, "/x").run(hwJob()).toList()
+        assertEquals("no retry", 1, fac.calls.size)
+        assertEquals(0, p.destroyForciblyCount)
+        assertEquals(0, done(ev).exitCode)
+        assertEquals(2, ev.count { it is TranscodeEvent.Progress })
+        assertTrue(ev.none { it is TranscodeEvent.Log })
+    }
+
+    @Test fun `a CPU run that prints the same header block is held to the two-minute bound, as before`() = runTest(timeout = 30.seconds) {
+        val p = HungProcess(stdout = flow { while (true) { delay(500); emit(HEADER_ONLY_BLOCK) } })
+        val events = async { runner(p).run(cpuJob()).toList() }
+        advanceTimeBy(3 * FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS)
+        runCurrent()
+        assertFalse("not stalled early (at ${currentTime} ms)", events.isCompleted)
+        assertEquals(0, p.destroyForciblyCount)
+
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS) // the ordinary bound still ends it
+        runCurrent()
+        assertTrue(events.isCompleted)
+        assertEquals(FfmpegRunner.EXIT_STALLED, done(events.await()).exitCode)
     }
 
     @Test fun `a CPU run with no progress for longer than the first-progress bound is not stalled early`() = runTest(timeout = 30.seconds) {

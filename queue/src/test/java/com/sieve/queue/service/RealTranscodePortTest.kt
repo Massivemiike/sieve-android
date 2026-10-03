@@ -13,6 +13,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -52,12 +53,11 @@ private class FakeProc(stdout: List<String> = emptyList()) : FfmpegProcess {
  * The S26 hang: ffmpeg alive but wedged in a native MediaCodec call. It ignores `q` and SIGTERM and only SIGKILL
  * ([destroyForcibly]) ends it. [deathCode] 134 is the SIGABRT the decoder thread died of there.
  */
-private class WedgedProc(private val deathCode: Int = 137) : FfmpegProcess {
+private class WedgedProc(private val deathCode: Int = 137, override val stdout: Flow<String> = emptyList<String>().asFlow()) : FfmpegProcess {
     val exit = CompletableDeferred<Int>()
     val stdinWrites = mutableListOf<String>()
     var destroyed = 0
     var killed = 0
-    override val stdout: Flow<String> = emptyList<String>().asFlow()
     override val stderr: Flow<String> = emptyList<String>().asFlow()
     override suspend fun writeStdin(text: String) { stdinWrites.add(text) }
     override fun destroy() { destroyed++ }
@@ -79,10 +79,15 @@ private class RecordingFactory(private val stdout: List<String> = emptyList(), p
 }
 
 /** Hands out one [WedgedProc] per start. */
-private class WedgedFactory(private val deathCode: Int = 137) : FfmpegProcessFactory {
+private class WedgedFactory(private val deathCode: Int = 137, private val stdout: Flow<String> = emptyList<String>().asFlow()) : FfmpegProcessFactory {
     val procs = java.util.concurrent.CopyOnWriteArrayList<WedgedProc>()
-    override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode).also { procs += it }
+    override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode, stdout).also { procs += it }
 }
+
+/** ffmpeg 8.1's `-progress` block with the encoder open and no frame out: the muxer header is in total_size, out_time is N/A. */
+private const val HEADER_ONLY_BLOCK =
+    "frame=0\nfps=0.00\nstream_0_0_q=0.0\nbitrate=N/A\ntotal_size=48\nout_time_us=N/A\nout_time_ms=N/A\nout_time=N/A\n" +
+        "dup_frames=0\ndrop_frames=0\nspeed=N/A\nprogress=continue\n"
 
 /**
  * These tests wait for the runner's process on a REAL thread (the probe hops to Dispatchers.IO, the polls to Dispatchers.Default)
@@ -223,6 +228,29 @@ class RealTranscodePortTest {
         assertEquals(listOf("q"), first.stdinWrites)
         assertEquals(1, first.destroyed)
         assertEquals(1, first.killed)
+        factory.procs[1].exit.complete(0)
+
+        val ev = withTimeout(10_000) { events.await() }
+        assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+        assertEquals(
+            listOf("Hardware codec stopped making progress, retrying on software encoder"),
+            ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+        )
+    }
+
+    // The same hang with ffmpeg still printing: its muxer header puts a non-zero total_size into every block, and that alone used to end the short bound.
+    @Test fun `a hardware run that keeps printing header-only progress blocks is still stopped by the first-progress bound`() = runBlocking {
+        val factory = WedgedFactory(stdout = flow { while (true) { emit(HEADER_ONLY_BLOCK); delay(5) } })
+        val quick = FfmpegRunner.Limits(
+            firstProgressTimeoutMs = 150, stallCheckMs = 10, stallQuitGraceMs = 10, stallTermGraceMs = 10, reapWaitMs = 1_000, readerDrainMs = 500,
+        )
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, quick) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async(Dispatchers.Default) { p.run("A", hw).toList() }
+        // The two-minute bound is the default here: only the first-progress bound can have stopped the first run within this wait.
+        withTimeout(10_000) { while (factory.procs.size < 2) delay(10) }
+
+        assertEquals(1, factory.procs[0].killed)
         factory.procs[1].exit.complete(0)
 
         val ev = withTimeout(10_000) { events.await() }

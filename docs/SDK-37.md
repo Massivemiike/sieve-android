@@ -138,8 +138,10 @@ escalation `q, SIGTERM, "SIGKILL"` was really `q, SIGTERM, SIGTERM`, which a wed
   survives SIGKILL gone after 3 s, stdin writes and `destroy()` are bounded and abandonable, lines are read with a length bound (`BoundedLineReader`, 8192 chars).
 * `FfmpegRunner`: a stall watchdog (no `-progress` advance for `STALL_TIMEOUT_MS` = 120 s; counted in 1 s ticks so an OS freeze does not count) stops the process (`q`, SIGTERM, SIGKILL);
   a run whose **video encoder is MediaCodec** (`-c:v h264_mediacodec` / `hevc_mediacodec` in the preset args, not merely the encoder toggle) that has not advanced at all 20 s after its spawn
-  (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs advance within about a second, the signed 1.0.4 test saw four of five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s) is stalled
-  too, so a hang before the first frame costs about 20 s, not two minutes; the short bound is for the first advance only (after it a mid-run stall keeps the 120 s), and never applies to CPU runs
+  (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs produce their first frame within about a second, the signed 1.0.4 test saw four of five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s)
+  that has shown no media progress 20 s after its spawn is stalled too, so a hang before ffmpeg has written its first frame or packet costs about 20 s, not two minutes. "Media progress" is an `out_time`
+  or a `frame` count beyond zero (or the end block): the muxer header's `total_size` and the repeated `frame=0 out_time=N/A` blocks of a wedged-but-open codec do not count, and the 20 s runs from the
+  spawn. The short bound is for the first frame only (after it a mid-run stall keeps the 120 s), and never applies to CPU runs
   (including the presets whose encoder is always software, AV1, VP9, ProRes, DNxHR, DVD, GIF, WebP and the audio-only ones, even with the encoder toggle on hardware), to a hardware decoder behind a CPU
   encoder, to the CPU retry, or to a run that seeks with `-ss` (ffmpeg decodes and drops the skipped part first);
   a stalled or crashed (SIGABRT, SIGSEGV, ...) hardware run is retried **once** on the CPU path, a stalled CPU run ends `Done(124, "ffmpeg stopped making progress")`; a run the caller asked
@@ -189,8 +191,9 @@ Nothing here could run: this work had no device, emulator or adb.
    proxy. Expect the OS behaviour: the connection times out and Sieve retries the row as a flaky network, with no Sieve prompt. That is correct there: below API 37 the prompt, guard and error text are inert.
 6. Room 2.6.1 to 2.8.5: open an existing v1 database (upgrade over 1.0.3 or earlier), run the androidTest suites (they are only compiled in this work).
 7. **The transcode hang fix:** a hardware (MediaCodec) transcode of a 4K AV1 clip, repeated until one hangs (about one in three on the S26 before the fix): ONE Cancel tap ends the row at once;
-   a hang before the first frame ends after about 20 s with a CPU retry once (one that hangs after progress began, within about two minutes), and a hang on the CPU retry ends FAILED with "ffmpeg stopped making progress". Then a normal long transcode (an hour of
-   video, faststart rewrite) must NOT be cut by the 120 s watchdog. `adb logcat -s SieveTx` shows the SIGKILL line.
+   a hang before ffmpeg has written its first frame or packet ends after about 20 s with a CPU retry once (one that hangs after progress began, within about two minutes), and a hang on the CPU retry ends FAILED with "ffmpeg stopped making progress". Then a normal long transcode (an hour of
+   video, faststart rewrite) must NOT be cut by the 120 s watchdog, and neither must a 4K AV1/VP9 software preset with the encoder toggle on hardware (its first frame can take 30 s or more). `adb logcat -s SieveTx` shows the SIGKILL line:
+   on a hang it must appear about 21 s after the transcode starts, not about 121 s (the signed 1.0.4 evidence cannot say which kind of hang the S26 produces, a silent one or one that keeps printing `frame=0` blocks; this settles it).
 
 **On an Android 17 emulator (`system-images;android-37.0;google_apis;x86_64`, debug build) or device**
 8. App memory limits: 4K SVT-AV1 and x265 transcodes with Max transcodes 2, `adb shell am memory-limiter status`, `dumpsys activity exit-info com.sieve.app`; repeat with `am memory-limiter ignore <uid>`.
