@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicReference
  *    `frame=0 out_time=N/A` blocks and floods the log. Time is counted in watchdog ticks, so a stretch in which the
  *    whole app was frozen by the OS is not counted either. A stalled hardware run falls back (below); a stalled CPU
  *    run ends [TranscodeEvent.Done] with [EXIT_STALLED] and [STALL_SUMMARY].
- *    A hardware ENCODE run gets a shorter bound for its FIRST advance only: none at all within
+ *    A run whose VIDEO ENCODER is MediaCodec gets a shorter bound for its FIRST advance only: none at all within
  *    [Limits.firstProgressTimeoutMs] ([FIRST_PROGRESS_TIMEOUT_MS]) of the spawn is a stall too, because MediaCodec runs that
  *    work advance within a second or two and a codec service that died under ffmpeg before its first frame would
  *    otherwise cost the whole [STALL_TIMEOUT_MS] before the CPU fallback. From the first advance on the ordinary bound
@@ -259,7 +259,7 @@ class FfmpegRunner(
         const val STALL_TIMEOUT_MS = 120_000L
 
         /**
-         * A hardware ENCODE run ([expectsPromptFirstProgress]) that has not advanced AT ALL this long after its spawn is
+         * A run whose video encoder is MediaCodec ([expectsPromptFirstProgress]) that has not advanced AT ALL this long after its spawn is
          * stalled, so the CPU fallback starts after about 20 s instead of [STALL_TIMEOUT_MS]. Measured on the S26 (signed
          * 1.0.4, five H.264 720p MediaCodec runs of a 19 s clip): four took 0.7-0.8 s from start to saved file, so their first
          * `-progress` block came in well under a second; the fifth hung in the Qualcomm codec service, printed nothing that
@@ -310,14 +310,29 @@ class FfmpegRunner(
             job.usedHardwareEncoder || hardwareDecoderIndices(job.inputArgs).isNotEmpty()
 
         /**
-         * Whether [FIRST_PROGRESS_TIMEOUT_MS] applies to [job]: the ENCODER is hardware, so the first frames come out within
-         * seconds. Not when only the decoder is (the CPU encoder behind it can need tens of seconds for its first packet, which
-         * is what [STALL_TIMEOUT_MS] is sized for), and not for the retry, whose encoder was demoted to software. Not when the
-         * job seeks with `-ss` either: `FfmpegArgs` places it after `-i`, where ffmpeg decodes and drops everything before it,
-         * so nothing advances for as long as that takes (minutes, for a deep seek into a long file).
+         * Whether [FIRST_PROGRESS_TIMEOUT_MS] applies to [job]: the video encoder the args actually select is MediaCodec
+         * ([videoEncoderOf] ends with `_mediacodec`), so the first frames come out within seconds. [TranscodeJob.usedHardwareEncoder]
+         * alone is not enough: it is only the user's encoder toggle, and on a phone with a hardware encoder every preset runs with
+         * it set, including the ones whose encoder is always software (AV1, VP9, ProRes, DNxHR, DVD, GIF, WebP, the audio-only
+         * presets). A 4K `libsvtav1` run needs tens of seconds before its first packet, so it must keep [STALL_TIMEOUT_MS].
+         * Not when only the decoder is hardware (the CPU encoder behind it can need just as long), and not for the retry, whose
+         * encoder was demoted to software. Not when the job seeks with `-ss` either: `FfmpegArgs` places it after `-i`, where
+         * ffmpeg decodes and drops everything before it, so nothing advances for as long as that takes (minutes, for a deep seek
+         * into a long file).
          */
         internal fun expectsPromptFirstProgress(job: TranscodeJob): Boolean =
-            job.usedHardwareEncoder && "-ss" !in job.presetArgs && "-ss" !in job.inputArgs
+            job.usedHardwareEncoder &&
+                videoEncoderOf(job.presetArgs)?.endsWith("_mediacodec") == true &&
+                "-ss" !in job.presetArgs && "-ss" !in job.inputArgs
+
+        /**
+         * The video encoder [presetArgs] select: the value of the LAST `-c:v` / `-vcodec` / `-codec:v` (ffmpeg lets a later
+         * option override an earlier one), or null when there is none (audio-only and GIF presets name no encoder).
+         */
+        internal fun videoEncoderOf(presetArgs: List<String>): String? {
+            val i = presetArgs.indexOfLast { it == "-c:v" || it == "-vcodec" || it == "-codec:v" }
+            return if (i >= 0) presetArgs.getOrNull(i + 1) else null
+        }
 
         /** Positions of `-c:v <x>_mediacodec` pairs in [inputArgs]. */
         private fun hardwareDecoderIndices(inputArgs: List<String>): List<Int> =

@@ -1,5 +1,8 @@
 package com.sieve.transcode
 
+import com.sieve.transcode.args.BuilderEncoder
+import com.sieve.transcode.args.FfmpegArgs
+import com.sieve.transcode.catalog.TranscodePresets
 import com.sieve.transcode.runner.FfmpegProcess
 import com.sieve.transcode.runner.FfmpegProcessFactory
 import com.sieve.transcode.runner.FfmpegRunner
@@ -301,6 +304,72 @@ class FfmpegRunnerStallTest {
         assertEquals(0, slowStart.destroyForciblyCount)
         assertEquals(0, done(ev).exitCode)
         assertEquals(1, ev.count { it is TranscodeEvent.Progress })
+    }
+
+    // --- the short bound follows the ENCODER the args select, not the encoder toggle --------------------------------------
+
+    /** A job as the app builds it when the encoder toggle says hardware (the default on a phone that has a hardware encoder). */
+    private fun appJob(presetId: String) = TranscodeJob(
+        "in.mkv", "out.mp4", FfmpegArgs.build(presetId, BuilderEncoder.HARDWARE, durationSec = 19.0), 19.0, usedHardwareEncoder = true,
+    )
+
+    @Test fun `a software-encoder preset keeps the two-minute bound although the encoder toggle says hardware`() = runTest(timeout = 30.seconds) {
+        // AV1 4K is libsvtav1 whatever the toggle says; on a phone its first packet comes tens of seconds after the spawn (T4: 36 s for 4K HEVC on the CPU).
+        val job = appJob("av1-4k")
+        assertEquals("libsvtav1", FfmpegRunner.videoEncoderOf(job.presetArgs))
+        val slowStart = ScriptedProcess(stdout = flow { delay(30_000); emit(progress(1_000_000)); delay(1_000); emit(progress(2_000_000)) }, exitAfterMs = 35_000)
+        val fac = QueueFactory(listOf(slowStart))
+        val ev = FfmpegRunner(fac, "/x").run(job).toList()
+        assertEquals("not killed and respawned at 20 s", 1, fac.calls.size)
+        assertEquals(0, slowStart.destroyForciblyCount)
+        assertTrue("no false 'Hardware codec' line", ev.none { it is TranscodeEvent.Log })
+        assertEquals(0, done(ev).exitCode)
+        assertEquals(2, ev.count { it is TranscodeEvent.Progress })
+    }
+
+    @Test fun `an audio-only preset keeps the two-minute bound although the encoder toggle says hardware`() = runTest(timeout = 30.seconds) {
+        val job = appJob("mp3-320")
+        assertNull("audio-only presets name no video encoder", FfmpegRunner.videoEncoderOf(job.presetArgs))
+        val hung = HungProcess()
+        val fac = QueueFactory(listOf(hung, ScriptedProcess(exitCode = 0)))
+        val events = async { FfmpegRunner(fac, "/x").run(job).toList() }
+        advanceTimeBy(3 * FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS)
+        runCurrent()
+        assertEquals("not stopped at ${currentTime} ms", 1, fac.calls.size)
+        assertEquals(0, hung.destroyForciblyCount)
+
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS) // only the ordinary bound ends it
+        runCurrent()
+        assertTrue(events.isCompleted)
+        assertEquals(1, hung.destroyForciblyCount)
+    }
+
+    @Test fun `across the whole catalog only the presets whose encoder is MediaCodec get the short bound`() {
+        for (preset in TranscodePresets.all) {
+            val job = appJob(preset.id)
+            val mediaCodec = job.presetArgs.any { it == "h264_mediacodec" || it == "hevc_mediacodec" } // an oracle that does not use videoEncoderOf
+            assertEquals(preset.id, mediaCodec, FfmpegRunner.expectsPromptFirstProgress(job))
+        }
+        val short = TranscodePresets.all.map { it.id }.filter { FfmpegRunner.expectsPromptFirstProgress(appJob(it)) }.toSet()
+        assertTrue(short.containsAll(listOf("h264-720", "h265-4k", "yt-1080", "twitter", "discord-8", "apple-ipad", "android-mobile")))
+        val software = listOf("av1-source", "av1-4k", "vp9-720", "webm-vp9", "prores-hq", "dnxhr-sq", "dvd-ntsc", "dvd-pal", "gif", "webp-anim",
+            "mp3-320", "aac-256", "opus-160", "flac", "wav")
+        for (id in software) assertFalse("$id is a CPU run", id in short)
+        // The toggle is still required: the same MediaCodec args on a software job are not held to the short bound.
+        assertFalse(FfmpegRunner.expectsPromptFirstProgress(appJob("h264-720").copy(usedHardwareEncoder = false)))
+    }
+
+    @Test fun `the video encoder is the one ffmpeg would use, the last of the codec options`() {
+        assertEquals("h264_mediacodec", FfmpegRunner.videoEncoderOf(listOf("-c:v", "h264_mediacodec", "-b:v", "3928k")))
+        assertEquals("libwebp", FfmpegRunner.videoEncoderOf(listOf("-vcodec", "libwebp", "-vf", "fps=24")))
+        assertEquals("hevc_mediacodec", FfmpegRunner.videoEncoderOf(listOf("-codec:v", "hevc_mediacodec")))
+        assertEquals("h264_mediacodec", FfmpegRunner.videoEncoderOf(listOf("-c:v", "libx264", "-c:v", "h264_mediacodec")))
+        assertEquals("libx264", FfmpegRunner.videoEncoderOf(listOf("-c:v", "h264_mediacodec", "-c:v", "libx264")))
+        assertNull(FfmpegRunner.videoEncoderOf(listOf("-vn", "-c:a", "aac")))
+        assertNull("a dangling option names nothing", FfmpegRunner.videoEncoderOf(listOf("-b:v", "1M", "-c:v")))
+        assertNull(FfmpegRunner.videoEncoderOf(emptyList()))
+        // The audio codec option is not the video one.
+        assertNull(FfmpegRunner.videoEncoderOf(listOf("-c:a", "h264_mediacodec")))
     }
 
     @Test fun `the CPU retry after a first-progress stall is not held to the short bound`() = runTest(timeout = 30.seconds) {

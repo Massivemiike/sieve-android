@@ -137,10 +137,11 @@ escalation `q, SIGTERM, "SIGKILL"` was really `q, SIGTERM, SIGTERM`, which a wed
 * `AndroidFfmpegProcess.destroyForcibly()` is a real SIGKILL (`android.os.Process.sendSignal` on the pid read from `Process.toString()`, logged), `awaitExit` declares a child that
   survives SIGKILL gone after 3 s, stdin writes and `destroy()` are bounded and abandonable, lines are read with a length bound (`BoundedLineReader`, 8192 chars).
 * `FfmpegRunner`: a stall watchdog (no `-progress` advance for `STALL_TIMEOUT_MS` = 120 s; counted in 1 s ticks so an OS freeze does not count) stops the process (`q`, SIGTERM, SIGKILL);
-  a hardware **encode** run that has not advanced at all 20 s after its spawn (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs advance within about a second, the signed 1.0.4 test saw four of
-  five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s) is stalled too, so a hang before the first frame costs about 20 s, not two minutes; the short bound is for the first advance only
-  (after it a mid-run stall keeps the 120 s), and never applies to CPU runs, to a hardware decoder behind a CPU encoder, to the CPU retry, or to a run that seeks with `-ss` (ffmpeg decodes and drops the
-  skipped part first);
+  a run whose **video encoder is MediaCodec** (`-c:v h264_mediacodec` / `hevc_mediacodec` in the preset args, not merely the encoder toggle) that has not advanced at all 20 s after its spawn
+  (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs advance within about a second, the signed 1.0.4 test saw four of five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s) is stalled
+  too, so a hang before the first frame costs about 20 s, not two minutes; the short bound is for the first advance only (after it a mid-run stall keeps the 120 s), and never applies to CPU runs
+  (including the presets whose encoder is always software, AV1, VP9, ProRes, DNxHR, DVD, GIF, WebP and the audio-only ones, even with the encoder toggle on hardware), to a hardware decoder behind a CPU
+  encoder, to the CPU retry, or to a run that seeks with `-ss` (ffmpeg decodes and drops the skipped part first);
   a stalled or crashed (SIGABRT, SIGSEGV, ...) hardware run is retried **once** on the CPU path, a stalled CPU run ends `Done(124, "ffmpeg stopped making progress")`; a run the caller asked
   to stop is never retried; the readers are detached and abandoned after 2 s so a blocked `read(2)` cannot hold the queue slot; `StderrLog` collapses repeated lines, paces the rest
   (300 burst, 50/s) and keeps the 64 KB / 30-line tails; events leave through a 256-slot `DROP_OLDEST` buffer.
