@@ -1,29 +1,43 @@
 package com.sieve.app.common
 
 import com.sieve.app.ui.common.ErrorHumanizer
+import com.sieve.engine.args.YtdlpArgs
+import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.JobSpec
+import com.sieve.queue.core.OutputRequest
+import com.sieve.queue.core.QueueJob
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** The adapter only formats "message — hint"; the rule table itself is tested in :engine (YtdlpErrorsTest). */
+/**
+ * The adapter only formats a failed row as "message — hint"; the rule table itself is tested in :engine (YtdlpErrorsTest) and the
+ * wording of a row that says only "yt-dlp exited N" in :queue (FailureTextTest). Everything is asked of a row, as the Queue does.
+ */
 class ErrorHumanizerTest {
+    private fun humanize(error: String?) = ErrorHumanizer.humanize(
+        QueueJob(
+            "j", JobSpec.Download("https://example.com/v", emptyList()), OutputRequest("Downloads/Sieve", YtdlpArgs.DEFAULT_TEMPLATE),
+            status = DownloadStatus.FAILED, title = "Cats", error = error,
+        ),
+    )
 
     @Test fun rateLimit() =
         assertEquals(
             "Rate-limited by the site — Wait a few minutes and retry.",
-            ErrorHumanizer.humanize("ERROR: HTTP Error 429: Too Many Requests"),
+            humanize("ERROR: HTTP Error 429: Too Many Requests"),
         )
 
     @Test fun geo() =
         assertEquals(
             "Not available in your region — Set a proxy under Settings → Network, or try another network.",
-            ErrorHumanizer.humanize("ERROR: This video is geo restricted in your region"),
+            humanize("ERROR: This video is geo restricted in your region"),
         )
 
     // Android has a cookies.txt import (Settings → Network → Cookies file) but no browser cookies.
     @Test fun loginHintPointsAtTheCookiesFileSetting() {
-        val s = ErrorHumanizer.humanize("ERROR: Sign in to confirm your age")
+        val s = humanize("ERROR: Sign in to confirm your age")
         assertTrue(s.startsWith("Age-restricted"), s)
         assertTrue(s.endsWith("Import a cookies.txt from a signed-in browser under Settings → Network → Cookies file."), s)
         assertFalse(s.contains("can't sign in", ignoreCase = true), s)
@@ -33,28 +47,28 @@ class ErrorHumanizerTest {
     @Test fun format() =
         assertEquals(
             "The chosen quality isn't available for this video — Pick \"Best video + audio\" or another preset.",
-            ErrorHumanizer.humanize("ERROR: Requested format is not available"),
+            humanize("ERROR: Requested format is not available"),
         )
 
     @Test fun forbidden() =
         assertEquals(
             "Access denied (403) — Retry, or update yt-dlp in Settings.",
-            ErrorHumanizer.humanize("ERROR: unable to download video data: HTTP Error 403: Forbidden"),
+            humanize("ERROR: unable to download video data: HTTP Error 403: Forbidden"),
         )
 
     @Test fun messageOnlyWhenThereIsNoHint() =
-        assertEquals("The disk is full", ErrorHumanizer.humanize("ERROR: [Errno 28] No space left on device"))
+        assertEquals("The disk is full", humanize("ERROR: [Errno 28] No space left on device"))
 
     @Test fun unknownFallsBackToLastLine() =
-        assertEquals("second line", ErrorHumanizer.humanize("Some unusual failure\nsecond line"))
+        assertEquals("second line", humanize("Some unusual failure\nsecond line"))
 
     @Test fun unknownErrorLineIsCleaned() =
-        assertEquals("Something odd", ErrorHumanizer.humanize("WARNING: noise\nERROR: [generic] Something odd\n"))
+        assertEquals("Something odd", humanize("WARNING: noise\nERROR: [generic] Something odd\n"))
 
     @Test fun warningLineDoesNotDecide() =
         assertEquals(
             "Rate-limited by the site — Wait a few minutes and retry.",
-            ErrorHumanizer.humanize(
+            humanize(
                 "WARNING: [youtube] abc: Sign in to confirm your age\n" +
                     "ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests",
             ),
@@ -63,14 +77,15 @@ class ErrorHumanizerTest {
     @Test fun urlsDoNotTriggerRules() =
         assertEquals(
             "Something odd at https://example.com/login/rate-limit",
-            ErrorHumanizer.humanize("ERROR: Something odd at https://example.com/login/rate-limit"),
+            humanize("ERROR: Something odd at https://example.com/login/rate-limit"),
         )
 
-    @Test fun legacyExitMessageSurvives() =
-        assertEquals("yt-dlp exited 1", ErrorHumanizer.humanize("yt-dlp exited 1"))
+    // Not left as "yt-dlp exited 1": a row from 1.0.3 or older says nothing else (FailureText words it).
+    @Test fun legacyExitMessageIsExplained() =
+        assertEquals("yt-dlp stopped without reporting a reason (exit 1) — Retry may work.", humanize("yt-dlp exited 1"))
 
     @Test fun blankAndNullGiveDownloadFailed() {
-        assertEquals("Download failed", ErrorHumanizer.humanize(""))
-        assertEquals("Download failed", ErrorHumanizer.humanize(null))
+        assertEquals("Download failed", humanize(""))
+        assertEquals("Download failed", humanize(null))
     }
 }

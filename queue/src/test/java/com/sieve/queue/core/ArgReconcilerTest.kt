@@ -113,4 +113,43 @@ class ArgReconcilerOverflowTest {
     @Test fun `a row with no title proves nothing`() {
         assertFalse(ArgReconciler.overflowedFileName(old, ""))
     }
+
+    // likelyOverflowedFileName: the same question once the real part-file suffix of the row's site is counted.
+
+    @Test fun `Facebook's part-file suffix is 47 bytes, so its captions overflow from 209 bytes, not 244`() {
+        val suffix = " [1370361647863285].f1234567890123456v.mp4.part"
+        assertEquals(47, suffix.toByteArray().size)
+        assertEquals(YtdlpArgs.MAX_FILENAME_BYTES, "a".repeat(208).toByteArray().size + suffix.toByteArray().size)
+
+        assertFalse(ArgReconciler.likelyOverflowedFileName(old, "a".repeat(208), "facebook"))
+        assertTrue(ArgReconciler.likelyOverflowedFileName(old, "a".repeat(209), "facebook"))
+        // The measured 221-byte caption: not PROVEN (244 + 12 hits nothing), but its part file was 268 bytes.
+        val caption = "🎬🔥 ".repeat(24) + "Cats!"
+        assertEquals(221, caption.toByteArray().size)
+        assertFalse(ArgReconciler.overflowedFileName(old, caption))
+        assertTrue(ArgReconciler.likelyOverflowedFileName(old, caption, "facebook"))
+    }
+
+    @Test fun `only Facebook's suffix is known, so any other site stays at what is proven`() {
+        val title = "a".repeat(221)
+        for (site in listOf("youtube", "instagram", "twitter", "Unknown", "", "facebookish", "notfacebook")) {
+            assertFalse(site, ArgReconciler.likelyOverflowedFileName(old, title, site))
+        }
+        for (site in listOf("facebook", "Facebook", "facebook:reel", "facebook:ads")) {
+            assertTrue(site, ArgReconciler.likelyOverflowedFileName(old, title, site))
+        }
+    }
+
+    @Test fun `what is proven is also likely, on every site`() {
+        for (site in listOf("youtube", "facebook", "Unknown")) {
+            assertTrue(site, ArgReconciler.likelyOverflowedFileName(old, "a".repeat(244), site))
+            assertFalse(site, ArgReconciler.likelyOverflowedFileName(old, "a".repeat(100), site))
+        }
+    }
+
+    @Test fun `a clamped title is not likely to have overflowed either`() {
+        assertFalse(ArgReconciler.likelyOverflowedFileName(YtdlpArgs.DEFAULT_TEMPLATE, "🎬".repeat(70), "facebook"))
+        assertFalse(ArgReconciler.likelyOverflowedFileName("%(id)s.%(ext)s", "a".repeat(221), "facebook"))
+        assertFalse(ArgReconciler.likelyOverflowedFileName(old, "", "facebook"))
+    }
 }

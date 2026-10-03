@@ -37,6 +37,12 @@ suspend fun showRestoredSnackbar(snackbars: AppSnackbars, count: Int, onView: ()
 /**
  * The launch-time notice: [consumeNotice] is the queue's one-time flag (it returns the number of restored rows once, then
  * 0), so the snackbar appears once per restore, however often this runs. View opens the Queue tab.
+ *
+ * "Once" includes an Activity recreation (rotation, a theme or font-size change) while it is up: the snackbar goes with the
+ * old Activity and the new one finds the flag at 0, so it is not shown again. That is deliberate, not an oversight: the flag
+ * is the only thing that keeps the notice from coming back at every rotation, and one re-shown later could say "paused" of
+ * rows the user has resumed since (from the notification, say). The Queue tab's banner says the same ("Restored N unfinished
+ * items") and stays until the user acts on it.
  */
 suspend fun announceRestoredItems(
     snackbars: AppSnackbars,

@@ -97,6 +97,25 @@ class QueueNotificationTest {
         )
     }
 
+    @Test fun `a failure notification for a legacy Facebook caption says the title may have made the file name too long`() {
+        // 221 bytes: the final name (244) fits, the part file of one stream (268) did not.
+        val caption = "🎬🔥 ".repeat(24) + "Cats!"
+        fun legacy(site: String, error: String = "yt-dlp exited 1") = dl("a", DownloadStatus.FAILED, title = caption)
+            .copy(error = error, site = site, output = OutputRequest("d", "%(title)s [%(id)s].%(ext)s"))
+        assertEquals(
+            DoneModel("Failed: $caption", "The title may have made the file name too long — Fixed, so Retry should work.", failed = true, openUri = null),
+            QueueNotification.renderDone(legacy("facebook")),
+        )
+        assertEquals(
+            "yt-dlp stopped without reporting a reason (exit 1) — Retry may work.",
+            QueueNotification.renderDone(legacy("youtube"))!!.text,
+        )
+        assertEquals(
+            "yt-dlp stopped without reporting a reason (exit 137) — Retry may work.",
+            QueueNotification.renderDone(legacy("facebook", error = "yt-dlp exited 137"))!!.text,
+        )
+    }
+
     @Test fun `pending intents use distinct request codes`() {
         assertNotEquals(
             QueueNotification.requestCode("a", NotifAction.PAUSE),

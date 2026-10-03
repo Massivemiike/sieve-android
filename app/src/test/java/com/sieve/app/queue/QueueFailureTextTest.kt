@@ -30,9 +30,12 @@ class QueueFailureTextTest {
     /** A Facebook post caption, emoji and all: 360 bytes, 80 characters. */
     private val caption = "🎬🔥 ".repeat(40)
 
-    private fun failed(id: String, error: String, title: String, template: String = oldTemplate) = QueueJob(
+    /** The measured Facebook caption: 221 bytes; its final name (244) fits ext4's 255, the part file of one stream (268) does not. */
+    private val facebookCaption = "🎬🔥 ".repeat(24) + "Cats!"
+
+    private fun failed(id: String, error: String, title: String, template: String = oldTemplate, site: String = "Unknown") = QueueJob(
         id, JobSpec.Download("https://www.facebook.com/watch/?v=$id", emptyList()), OutputRequest("Downloads/Sieve", template),
-        status = DownloadStatus.FAILED, title = title, error = error,
+        status = DownloadStatus.FAILED, title = title, site = site, error = error,
     )
 
     private fun showQueueOf(vararg jobs: QueueJob) {
@@ -46,6 +49,26 @@ class QueueFailureTextTest {
     @Test fun legacyRowWithACaptionTitleSaysTheTitleMadeTheFileNameTooLong() {
         showQueueOf(failed("fb", "yt-dlp exited 1", caption))
         rule.onNodeWithTag("error_fb").assertTextEquals("The title made the file name too long — Fixed, so Retry will work.")
+    }
+
+    @Test fun legacyFacebookRowWithTheMeasuredCaptionSaysTheTitleMayHaveMadeTheFileNameTooLong() {
+        showQueueOf(
+            failed("fb221", "yt-dlp exited 1", facebookCaption, site = "facebook"),
+            failed("yt221", "yt-dlp exited 1", facebookCaption, site = "youtube"),
+        )
+        rule.onNodeWithTag("error_fb221")
+            .assertTextEquals("The title may have made the file name too long — Fixed, so Retry should work.")
+        // The same caption on a site whose part-file suffix is not known is not blamed on a guess.
+        rule.onNodeWithTag("error_yt221").assertTextEquals("yt-dlp stopped without reporting a reason (exit 1) — Retry may work.")
+    }
+
+    @Test fun aTitleThatFitsOrAKilledRunIsNotBlamedOnTheTitle() {
+        showQueueOf(
+            failed("yt160", "yt-dlp exited 1", "x".repeat(160), site = "youtube"),
+            failed("fb137", "yt-dlp exited 137", facebookCaption, site = "facebook"),
+        )
+        rule.onNodeWithTag("error_yt160").assertTextEquals("yt-dlp stopped without reporting a reason (exit 1) — Retry may work.")
+        rule.onNodeWithTag("error_fb137").assertTextEquals("yt-dlp stopped without reporting a reason (exit 137) — Retry may work.")
     }
 
     @Test fun legacyRowWithAShortTitleSaysYtDlpStoppedWithoutAReason() {

@@ -86,6 +86,24 @@ class RestoredNoticeTest {
         assertEquals(listOf("Restored 3 unfinished items — paused"), shown)
     }
 
+    @Test fun aSnackbarLostToAnActivityRecreationIsNotShownAgain() = runTest {
+        // Rotation: the Activity's coroutines are cancelled with it and the new Activity asks the same flag again. The notice
+        // is deliberately not re-armed (see announceRestoredItems); the Queue tab's banner carries the information on.
+        val snackbars = AppSnackbars()
+        val flag = AtomicInteger(3)
+        val oldActivity = launch { announceRestoredItems(snackbars, { flag.getAndSet(0) }) {} }
+        runCurrent()
+        assertNotNull(snackbars.state.currentSnackbarData)
+
+        oldActivity.cancel()
+        runCurrent()
+        assertNull(snackbars.state.currentSnackbarData)
+
+        launch { announceRestoredItems(snackbars, { flag.getAndSet(0) }) {} }
+        runCurrent()
+        assertNull(snackbars.state.currentSnackbarData)
+    }
+
     @Test fun noRestoredRowsMeansNoSnackbar() = runTest {
         val snackbars = AppSnackbars()
         launch { announceRestoredItems(snackbars, { 0 }) {} }

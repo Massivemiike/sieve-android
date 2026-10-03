@@ -56,8 +56,33 @@ class JobToastTest {
     }
 
     // A row failed by v1.0.3 or older keeps only "yt-dlp exited N" (and the old, unclamped template); the snackbar words it like the Queue row does.
-    private fun legacy(title: String) = dl(DownloadStatus.FAILED, title = title, error = "yt-dlp exited 1")
-        .copy(output = OutputRequest("d", "%(title)s [%(id)s].%(ext)s"))
+    private fun legacy(title: String, site: String = "Unknown", error: String = "yt-dlp exited 1") =
+        dl(DownloadStatus.FAILED, title = title, error = error)
+            .copy(output = OutputRequest("d", "%(title)s [%(id)s].%(ext)s"), site = site)
+
+    // The measured Facebook caption: 221 bytes, whose part file (268) overflowed ext4's 255 while its final name (244) did not.
+    private val facebookCaption = "🎬🔥 ".repeat(24) + "Cats!"
+
+    @Test fun `a legacy Facebook caption that overflowed the part file says the title may have made the file name too long`() {
+        assertEquals(
+            "Download failed: The title may have made the file name too long — Fixed, so Retry should work.",
+            JobToast.text(legacy(facebookCaption, site = "facebook")),
+        )
+        // Not on a site whose suffix is not known, nor for a title that fits.
+        assertEquals(
+            "Download failed: yt-dlp stopped without reporting a reason (exit 1) — Retry may work.",
+            JobToast.text(legacy(facebookCaption, site = "youtube")),
+        )
+        assertEquals(
+            "Download failed: yt-dlp stopped without reporting a reason (exit 1) — Retry may work.",
+            JobToast.text(legacy("x".repeat(160), site = "youtube")),
+        )
+        // Nor for a killed run.
+        assertEquals(
+            "Download failed: yt-dlp stopped without reporting a reason (exit 137) — Retry may work.",
+            JobToast.text(legacy(facebookCaption, site = "facebook", error = "yt-dlp exited 137")),
+        )
+    }
 
     @Test fun `a legacy failure with an overflowing title says the title made the file name too long`() {
         assertEquals(
