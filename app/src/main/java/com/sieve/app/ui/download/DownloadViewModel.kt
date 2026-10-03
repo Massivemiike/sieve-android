@@ -155,7 +155,9 @@ class DownloadViewModel(
                 id = idGen(),
                 spec = JobSpec.Download(s.url.trim(), args),
                 output = OutputRequest(outputDirLabel(), YtdlpArgs.DEFAULT_TEMPLATE),
-                title = info?.title ?: "",
+                // A row that was queued without a reading of its link (the analyze failed, or Download was tapped first) has no
+                // title yet: it carries the link itself, as on the desktop (NewDownload: `analyzedVideo?.title || url`).
+                title = info?.title?.takeIf { it.isNotBlank() } ?: s.url.trim(),
                 channel = info?.displayChannel ?: "",
                 site = info?.extractor ?: "Unknown",
                 format = preset.label,

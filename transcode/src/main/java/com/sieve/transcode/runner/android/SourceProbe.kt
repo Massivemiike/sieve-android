@@ -21,8 +21,8 @@ data class SourceVideoInfo(
 /**
  * Cheap source inspection via [MediaExtractor] (no ffprobe — Sieve doesn't ship one). Used at
  * transcode spawn to (a) detect AV1 inputs, which MUST be decoded with `av1_mediacodec` (the
- * bundled ffmpeg has no working software AV1 decoder), (b) feed the source height to
- * [com.sieve.transcode.args.MediaCodecSanitizer]'s bitrate ladder, (c) feed the source audio
+ * bundled ffmpeg has no working software AV1 decoder), (b) feed the source size to
+ * [com.sieve.transcode.args.MediaCodecSanitizer]'s bitrate ladder (keyed on the short side, so the unrotated size is enough), (c) feed the source audio
  * sample rate to [com.sieve.transcode.args.LoudnormRate] so "Normalize audio" keeps the source rate,
  * and (d) supply the source duration (Windows gets it from ffprobe), without which ffmpeg progress
  * has no denominator and stays indeterminate.

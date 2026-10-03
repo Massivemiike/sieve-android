@@ -45,7 +45,30 @@ class ArgReconcilerTest {
             listOf("-f", "best", "-P", "/old", "-o", "x.%(ext)s"),
             PreparedOutput(workDir = "/work/job-a", workFileTemplate = "%(title)s [%(id)s].%(ext)s"),
         )
-        assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(title).150B [%(id)s].%(ext)s"), out)
+        assertEquals(
+            listOf(
+                "-f", "best", "-P", "/work/job-a", "-o", "%(__sieve_title,title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(__sieve_title)s",
+            ),
+            out,
+        )
+    }
+
+    @Test fun `a row persisted by 1_0_3 or the 1_0_4 RC is spawned with the byte-exact title cut`() {
+        // YtdlpArgs.build() put -o and -P in the persisted args; the output seam's template is the persisted outputTemplate.
+        val out = ArgReconciler.buildSpawnArgs(
+            JobSpec.Download("https://x", listOf("-f", "bestvideo*+bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp", "--embed-metadata")),
+            PreparedOutput("/work/job-a", "%(title).150B [%(id)s].%(ext)s"),
+        )
+        assertEquals(
+            listOf(
+                "--newline", "-c", "--no-warnings",
+                "-f", "bestvideo*+bestaudio/best", "--embed-metadata",
+                "-P", "/work/job-a", "-o", "%(__sieve_title,title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(__sieve_title)s",
+            ),
+            out,
+        )
     }
 
     @Test fun `injectDownloadOutput points yt-dlp at the job's download archive`() {
@@ -65,13 +88,36 @@ class ArgReconcilerTest {
         assertEquals("/mine/archive.txt", out[out.indexOf("--download-archive") + 1])
     }
 
-    @Test fun `byteSafeTemplate clamps an unbounded title and leaves others alone`() {
-        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
-        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+    @Test fun `byteSafeTemplate cuts the sanitized title copy and leaves other templates alone`() {
+        val cut = "%(__sieve_title,title).150B [%(id)s].%(ext)s"
+        assertEquals(cut, ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
+        assertEquals(cut, ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+        assertEquals(cut, ArgReconciler.byteSafeTemplate(cut)) // idempotent
         assertEquals("%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(id)s.%(ext)s"))
+        assertEquals("%(playlist_title)s/%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(playlist_title)s/%(id)s.%(ext)s"))
     }
 
-    // Rows saved before the 1.0.4 preset fix keep the args they were saved with: the reconciler only adds -c and swaps -P/-o.
+    @Test fun `byteSafeTemplate falls back to the real title - a playlist has no scratch field`() {
+        // `%(a,b)s` is yt-dlp's alternative. Without ",title" the playlist-level info JSON is named "NA [<playlist id>].info.json".
+        assertEquals("%(__sieve_title,title).150B", ArgReconciler.byteSafeTemplate("%(title).150B"))
+    }
+
+    @Test fun `byteSafeTemplate keeps a cut tighter than 150 and clamps a looser one`() {
+        assertEquals(
+            "%(__sieve_title,title).80B - %(uploader)s.%(ext)s",
+            ArgReconciler.byteSafeTemplate("%(title).80B - %(uploader)s.%(ext)s"),
+        )
+        assertEquals("%(__sieve_title,title).150B.%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B.%(ext)s"))
+        for (n in listOf("151", "400", "99999999999")) { // the last overflows an Int: still 150
+            assertEquals("%(__sieve_title,title).150B.%(ext)s", ArgReconciler.byteSafeTemplate("%(title).${n}B.%(ext)s"))
+        }
+    }
+
+    // What injectDownloadOutput adds for a "%(title)s [%(id)s].%(ext)s" work template: the byte-exact title cut and its scratch copy.
+    private val SPAWN_TEMPLATE = "%(__sieve_title,title).150B [%(id)s].%(ext)s"
+    private val TITLE_COPY = "%(title)S:%(__sieve_title)s"
+
+    // Rows saved before the 1.0.4 preset fix keep the args they were saved with: the reconciler only adds -c, swaps -P/-o and adds the title copy.
     @Test fun `args stored by the old presets are spawned as they are, with no migration`() {
         val old720 = "bestvideo[height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/" +
             "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
@@ -84,7 +130,7 @@ class ArgReconcilerTest {
             val prepared = PreparedOutput("/work/a", "%(title)s [%(id)s].%(ext)s")
             val out = ArgReconciler.injectDownloadOutput(ArgReconciler.ensureContinue(stored), prepared)
             val expected = listOf("-c") + stored.filterIndexed { i, _ -> i !in 2..5 } +
-                listOf("-P", "/work/a", "-o", "%(title).150B [%(id)s].%(ext)s")
+                listOf("-P", "/work/a", "-o", SPAWN_TEMPLATE, "--parse-metadata", TITLE_COPY)
             assertEquals(expected, out)
             assertTrue("-S" !in out && "--merge-output-format" !in out && "320K" !in out && "128K" !in out)
         }
@@ -103,7 +149,7 @@ class ArgReconcilerTest {
             val prepared = PreparedOutput("/work/a", "%(title)s [%(id)s].%(ext)s")
             val out = ArgReconciler.injectDownloadOutput(ArgReconciler.ensureContinue(stored), prepared)
             val expected = listOf("-c") + stored.filterIndexed { i, _ -> i !in 2..5 } +
-                listOf("-P", "/work/a", "-o", "%(title).150B [%(id)s].%(ext)s")
+                listOf("-P", "/work/a", "-o", SPAWN_TEMPLATE, "--parse-metadata", TITLE_COPY)
             assertEquals(expected, out)
             assertTrue(out.none { "proto" in it || "[width>" in it }) // none of the keep-resolution selector or sort crept in
         }
@@ -124,8 +170,19 @@ class ArgReconcilerTest {
 class ArgReconcilerOverflowTest {
     private val old = "%(title)s [%(id)s].%(ext)s"
 
-    @Test fun `byteSafeTemplate and the default template are the same clamp`() {
-        assertEquals(YtdlpArgs.DEFAULT_TEMPLATE, ArgReconciler.byteSafeTemplate(old))
+    @Test fun `the old default and the current default are spawned with the same clamp`() {
+        assertEquals(ArgReconciler.byteSafeTemplate(YtdlpArgs.DEFAULT_TEMPLATE), ArgReconciler.byteSafeTemplate(old))
+    }
+
+    // byteSafeTemplate also rewrites a template that already cuts the title (to cut the sanitized copy), so "the spawn-time
+    // rewrite changed it" must not be what makes a row's title look unclamped: the verdict reads the STORED template.
+    @Test fun `rewriting a clamped template at spawn does not make its row look unclamped`() {
+        assertTrue(ArgReconciler.byteSafeTemplate(YtdlpArgs.DEFAULT_TEMPLATE) != YtdlpArgs.DEFAULT_TEMPLATE)
+        val long = "a".repeat(400)
+        assertFalse(ArgReconciler.overflowedFileName(YtdlpArgs.DEFAULT_TEMPLATE, long))
+        assertFalse(ArgReconciler.likelyOverflowedFileName(YtdlpArgs.DEFAULT_TEMPLATE, long, "facebook"))
+        assertTrue(ArgReconciler.overflowedFileName(old, long))
+        assertTrue(ArgReconciler.likelyOverflowedFileName(old, long, "facebook"))
     }
 
     @Test fun `the least yt-dlp adds is counted, so the limit falls between 243 and 244 title bytes`() {

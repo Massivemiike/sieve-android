@@ -5,6 +5,7 @@ import com.sieve.transcode.args.BuilderEncoder.HARDWARE
 import com.sieve.transcode.args.BuilderEncoder.SOFTWARE
 import com.sieve.transcode.args.FfmpegArgs
 import com.sieve.transcode.args.FinalizeOptions
+import com.sieve.transcode.args.ScaleFilter
 import com.sieve.transcode.args.ThreadCaps
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -81,7 +82,7 @@ class ArgFinalizerTest {
         )
         val vfIdx = out.indexOf("-vf")
         // colon -> \:, apostrophe -> close quote + three backslashes + quote + reopen quote ('\\\'')
-        assertEquals("scale=-2:1080,subtitles='a\\:b'\\\\\\''c'", out[vfIdx + 1])
+        assertEquals(ScaleFilter.shortSide(1080) + ",subtitles='a\\:b'\\\\\\''c'", out[vfIdx + 1])
     }
 
     @Test fun burnSubs_apostropheBecomesCloseQuoteTripleBackslashQuoteReopen() {
@@ -230,7 +231,7 @@ class ArgFinalizerTest {
         assertEquals(
             listOf(
                 "-c:v", "libx264", "-crf", "19", "-preset", "medium", "-pix_fmt", "yuv420p",
-                "-vf", "scale=-2:1080,subtitles='s.srt'",
+                "-vf", ScaleFilter.shortSide(1080) + ",subtitles='s.srt'",
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 "-threads", "16",
                 "-af", "loudnorm=I=-16:TP=-1.5:LRA=11,aresample=48000,volume=3dB",

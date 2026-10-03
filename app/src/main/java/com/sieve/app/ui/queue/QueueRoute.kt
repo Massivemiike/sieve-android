@@ -66,6 +66,7 @@ import com.sieve.app.ui.common.SieveProgress
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.Phase
 import com.sieve.queue.core.QueueJob
+import com.sieve.queue.core.displayTitle
 import com.sieve.queue.service.OutputIntents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.StateFlow
@@ -260,7 +261,6 @@ private fun JobRow(
     onOpen: (QueueJob) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
-    val running = job.status == DownloadStatus.RUNNING || job.status == DownloadStatus.PREPARING
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp)).background(cs.surface)
             .border(1.dp, cs.outline, RoundedCornerShape(13.dp)).testTag("job_${job.id}").padding(11.dp),
@@ -274,7 +274,7 @@ private fun JobRow(
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(
-                    job.title.ifBlank { job.spec.let { "Download" } },
+                    job.displayTitle,
                     style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 StateChip(job)
@@ -304,11 +304,12 @@ private fun JobRow(
                 }
             }
         }
-        if (running) {
-            SieveProgress(job.progress.fraction)
-            val pct = job.progress.fraction?.let { "${(it * 100).toInt()}%" } ?: "—"
-            val meta = listOfNotNull(pct, job.progress.speed, job.progress.eta?.let { "$it left" }).joinToString(" · ")
-            Text(meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+        rowProgress(job)?.let { rp ->
+            SieveProgress(rp.fraction, Modifier.testTag("bar_${job.id}"))
+            Text(
+                rp.meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant,
+                modifier = Modifier.testTag("progress_${job.id}"),
+            )
         }
         if (job.status == DownloadStatus.FAILED && !job.error.isNullOrBlank()) {
             // job.error is yt-dlp's raw ERROR text (kept raw so retry classification sees real signals); the humanizer words it.

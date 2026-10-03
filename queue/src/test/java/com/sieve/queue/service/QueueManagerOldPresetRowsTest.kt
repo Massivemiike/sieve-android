@@ -57,15 +57,19 @@ class QueueManagerOldPresetRowsTest {
         "rc1-720" to stored(rc1Format, "-S", rc1Sort(720), "--merge-output-format", "mp4"),
     )
 
-    /** What yt-dlp is started with for a stored row: `-c`, the stored args minus their own -P/-o, then the job's work dir and template. */
+    /**
+     * What yt-dlp is started with for a stored row: `-c`, the stored args minus their own -P/-o, then the job's work dir and
+     * template, and the title copy that template reads (every row gets the same two, whatever preset it was saved with).
+     */
     private fun spawned(id: String, args: List<String>): List<String> {
         val kept = ArrayList<String>()
         var i = 0
         while (i < args.size) {
             if (args[i] == "-o" || args[i] == "-P") i += 2 else kept += args[i++]
         }
-        // FakeOutputProvider's work dir and template; its unbounded %(title)s is clamped to 150 bytes at spawn.
-        return listOf("-c") + kept + listOf("-P", "/work/$id", "-o", "%(title).150B.%(ext)s")
+        // FakeOutputProvider's work dir and template; its unbounded %(title)s is cut to 150 bytes at spawn, byte-exactly (the cut reads
+        // the sanitized title copy that --parse-metadata makes).
+        return listOf("-c") + kept + listOf("-P", "/work/$id", "-o", "%(__sieve_title,title).150B.%(ext)s", "--parse-metadata", "%(title)S:%(__sieve_title)s")
     }
 
     private fun entity(id: String, position: Long, status: DownloadStatus, args: List<String>) = DownloadTaskEntity(

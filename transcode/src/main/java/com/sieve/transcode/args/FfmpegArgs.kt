@@ -31,9 +31,11 @@ object EncoderResolver {
  * ffmpeg case is unreachable because all 52 built-in ids have an explicit arm.
  *
  * Documented divergences from the (frozen) table: the DNxHR `-pix_fmt`/`-ar` fixes below; software
- * H.264 gets `-pix_fmt yuv420p` ([withSoftwarePixFmt]); and the Discord presets derive a video
+ * H.264 gets `-pix_fmt yuv420p` ([withSoftwarePixFmt]); the Discord presets derive a video
  * bitrate from the clip length (the desktop's `discordFitArgs`) — budgeting the TRIMMED length, where
- * the desktop budgets the whole source.
+ * the desktop budgets the whole source; and every resolution tier (`scale=-2:H` on the desktop) is a
+ * never-upscaling SHORT-side [ScaleFilter.shortSide], the GIF's 480 a [ScaleFilter.maxWidth] cap.
+ * Only the fixed-canvas presets (Instagram, DVD) keep a literal `scale=W:H`.
  */
 object FfmpegArgs {
 
@@ -66,28 +68,28 @@ object FfmpegArgs {
         val body: List<String>? = when (presetId) {
             // ── H.264 family (uses <V>) ─────────────────────────────
             "h264-source" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "h264-720" -> listOf("-c:v", v, "-crf", "22", "-preset", "medium", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart")
-            "h264-1080" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "h264-1440" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-maxrate", "18M", "-bufsize", "36M", "-vf", "scale=-2:1440", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "h264-4k" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-maxrate", "35M", "-bufsize", "70M", "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
+            "h264-720" -> listOf("-c:v", v, "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart")
+            "h264-1080" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+            "h264-1440" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-maxrate", "18M", "-bufsize", "36M", "-vf", ScaleFilter.shortSide(1440), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+            "h264-4k" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-maxrate", "35M", "-bufsize", "70M", "-vf", ScaleFilter.shortSide(2160), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
             // ── HEVC family (uses <H>, always -tag:v hvc1) ───────────
             "h265-source" -> listOf("-c:v", h, "-crf", "23", "-preset", "medium", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
-            "h265-720" -> listOf("-c:v", h, "-crf", "25", "-preset", "medium", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-tag:v", "hvc1")
-            "h265-1080" -> listOf("-c:v", h, "-crf", "23", "-preset", "medium", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
-            "h265-1440" -> listOf("-c:v", h, "-crf", "23", "-preset", "medium", "-maxrate", "12M", "-bufsize", "24M", "-vf", "scale=-2:1440", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
-            "h265-4k" -> listOf("-c:v", h, "-crf", "24", "-preset", "medium", "-maxrate", "22M", "-bufsize", "44M", "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-tag:v", "hvc1")
+            "h265-720" -> listOf("-c:v", h, "-crf", "25", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-tag:v", "hvc1")
+            "h265-1080" -> listOf("-c:v", h, "-crf", "23", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
+            "h265-1440" -> listOf("-c:v", h, "-crf", "23", "-preset", "medium", "-maxrate", "12M", "-bufsize", "24M", "-vf", ScaleFilter.shortSide(1440), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
+            "h265-4k" -> listOf("-c:v", h, "-crf", "24", "-preset", "medium", "-maxrate", "22M", "-bufsize", "44M", "-vf", ScaleFilter.shortSide(2160), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-tag:v", "hvc1")
             // ── AV1 family (always libsvtav1, -preset 6) ─────────────
             "av1-source" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-c:a", "libopus", "-b:a", "128k")
-            "av1-720" -> listOf("-c:v", "libsvtav1", "-crf", "32", "-preset", "6", "-vf", "scale=-2:720", "-c:a", "libopus", "-b:a", "96k")
-            "av1-1080" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", "scale=-2:1080", "-c:a", "libopus", "-b:a", "128k")
-            "av1-1440" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", "scale=-2:1440", "-c:a", "libopus", "-b:a", "160k")
-            "av1-4k" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", "scale=-2:2160", "-c:a", "libopus", "-b:a", "160k")
+            "av1-720" -> listOf("-c:v", "libsvtav1", "-crf", "32", "-preset", "6", "-vf", ScaleFilter.shortSide(720), "-c:a", "libopus", "-b:a", "96k")
+            "av1-1080" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", ScaleFilter.shortSide(1080), "-c:a", "libopus", "-b:a", "128k")
+            "av1-1440" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", ScaleFilter.shortSide(1440), "-c:a", "libopus", "-b:a", "160k")
+            "av1-4k" -> listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", ScaleFilter.shortSide(2160), "-c:a", "libopus", "-b:a", "160k")
             // ── VP9 family (always libvpx-vp9, -row-mt 1) ────────────
             "vp9-source" -> listOf("-c:v", "libvpx-vp9", "-crf", "31", "-b:v", "0", "-row-mt", "1", "-c:a", "libopus", "-b:a", "128k")
-            "vp9-720" -> listOf("-c:v", "libvpx-vp9", "-b:v", "2.5M", "-row-mt", "1", "-vf", "scale=-2:720", "-c:a", "libopus", "-b:a", "96k")
-            "webm-vp9" -> listOf("-c:v", "libvpx-vp9", "-b:v", "5M", "-row-mt", "1", "-vf", "scale=-2:1080", "-c:a", "libopus", "-b:a", "128k")
-            "vp9-1440" -> listOf("-c:v", "libvpx-vp9", "-b:v", "9M", "-row-mt", "1", "-vf", "scale=-2:1440", "-c:a", "libopus", "-b:a", "128k")
-            "vp9-4k" -> listOf("-c:v", "libvpx-vp9", "-b:v", "18M", "-row-mt", "1", "-vf", "scale=-2:2160", "-c:a", "libopus", "-b:a", "160k")
+            "vp9-720" -> listOf("-c:v", "libvpx-vp9", "-b:v", "2.5M", "-row-mt", "1", "-vf", ScaleFilter.shortSide(720), "-c:a", "libopus", "-b:a", "96k")
+            "webm-vp9" -> listOf("-c:v", "libvpx-vp9", "-b:v", "5M", "-row-mt", "1", "-vf", ScaleFilter.shortSide(1080), "-c:a", "libopus", "-b:a", "128k")
+            "vp9-1440" -> listOf("-c:v", "libvpx-vp9", "-b:v", "9M", "-row-mt", "1", "-vf", ScaleFilter.shortSide(1440), "-c:a", "libopus", "-b:a", "128k")
+            "vp9-4k" -> listOf("-c:v", "libvpx-vp9", "-b:v", "18M", "-row-mt", "1", "-vf", ScaleFilter.shortSide(2160), "-c:a", "libopus", "-b:a", "160k")
             // ── Editing intermediates (no scale; PCM audio) ──────────
             "prores-422" -> listOf("-c:v", "prores_ks", "-profile:v", "2", "-c:a", "pcm_s16le")
             "prores-hq" -> listOf("-c:v", "prores_ks", "-profile:v", "3", "-c:a", "pcm_s16le")
@@ -101,13 +103,13 @@ object FfmpegArgs {
             "dnxhr-444" -> listOf("-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le", "-c:a", "pcm_s16le", "-ar", "48000")
             // ── Social ──────────────────────────────────────────────
             "yt-source" -> listOf("-c:v", v, "-crf", "18", "-preset", "slow", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
-            "yt-720" -> listOf("-c:v", v, "-b:v", "5M", "-preset", "slow", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "yt-1080" -> listOf("-c:v", v, "-b:v", "12M", "-preset", "slow", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
-            "yt-1440" -> listOf("-c:v", v, "-b:v", "24M", "-preset", "slow", "-vf", "scale=-2:1440", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
-            "yt-4k" -> listOf("-c:v", v, "-b:v", "45M", "-preset", "slow", "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
+            "yt-720" -> listOf("-c:v", v, "-b:v", "5M", "-preset", "slow", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+            "yt-1080" -> listOf("-c:v", v, "-b:v", "12M", "-preset", "slow", "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
+            "yt-1440" -> listOf("-c:v", v, "-b:v", "24M", "-preset", "slow", "-vf", ScaleFilter.shortSide(1440), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
+            "yt-4k" -> listOf("-c:v", v, "-b:v", "45M", "-preset", "slow", "-vf", ScaleFilter.shortSide(2160), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
             "ig-vert" -> listOf("-c:v", v, "-b:v", "12M", "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
             "ig-square" -> listOf("-c:v", v, "-b:v", "8M", "-vf", "scale=1080:1080:force_original_aspect_ratio=decrease,pad=1080:1080:(ow-iw)/2:(oh-ih)/2", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "twitter" -> listOf("-c:v", v, "-b:v", "25M", "-preset", "medium", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+            "twitter" -> listOf("-c:v", v, "-b:v", "25M", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
             "discord-25" -> discordFit(v, 25, 128, clipSec) + listOf("-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart")
             "discord-8" -> discordFit(v, 8, 96, clipSec) + listOf("-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart")
             // ── Audio (lead with -vn, no video codec) ────────────────
@@ -119,18 +121,18 @@ object FfmpegArgs {
             "flac" -> listOf("-vn", "-c:a", "flac", "-frame_size", "4608")
             "wav" -> listOf("-vn", "-c:a", "pcm_s16le")
             // ── Devices ─────────────────────────────────────────────
-            "apple-iphone" -> listOf("-c:v", v, "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
-            "apple-ipad" -> listOf("-c:v", h, "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
+            "apple-iphone" -> listOf("-c:v", v, "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart")
+            "apple-ipad" -> listOf("-c:v", h, "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1")
             "apple-tv" -> listOf("-c:v", h, "-pix_fmt", "yuv420p10le", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-tag:v", "hvc1")
-            "android-mobile" -> listOf("-c:v", v, "-crf", "23", "-preset", "medium", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-profile:v", "main", "-level", "4.0")
-            "android-tablet" -> listOf("-c:v", v, "-crf", "21", "-preset", "medium", "-vf", "scale=-2:1080", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-profile:v", "high", "-level", "4.1")
+            "android-mobile" -> listOf("-c:v", v, "-crf", "23", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-profile:v", "main", "-level", "4.0")
+            "android-tablet" -> listOf("-c:v", v, "-crf", "21", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080), "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-profile:v", "high", "-level", "4.1")
             "roku-fire" -> listOf("-c:v", h, "-crf", "24", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", "-tag:v", "hvc1", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709")
             "plex-direct" -> listOf("-c:v", v, "-crf", "20", "-preset", "medium", "-profile:v", "high", "-level", "4.2", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart")
             // ── Legacy (fixed mpeg2video; -f dvd at end) ─────────────
             "dvd-ntsc" -> listOf("-c:v", "mpeg2video", "-vf", "scale=720:480", "-r", "29.97", "-b:v", "6M", "-c:a", "ac3", "-b:a", "192k", "-f", "dvd")
             "dvd-pal" -> listOf("-c:v", "mpeg2video", "-vf", "scale=720:576", "-r", "25", "-b:v", "6M", "-c:a", "ac3", "-b:a", "192k", "-f", "dvd")
             // ── Image (gif has NO -c:v; webp-anim uses -vcodec) ──────
-            "gif" -> listOf("-vf", "fps=12,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-loop", "0")
+            "gif" -> listOf("-vf", "fps=12,${ScaleFilter.maxWidth(480, ":flags=lanczos")},split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse", "-loop", "0")
             "webp-anim" -> listOf("-vcodec", "libwebp", "-vf", "fps=24", "-quality", "80", "-loop", "0")
             // ── custom-* / unknown → trim-only (desktop early return) ─
             else -> null

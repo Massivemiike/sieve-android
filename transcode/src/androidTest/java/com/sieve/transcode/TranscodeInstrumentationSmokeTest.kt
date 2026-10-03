@@ -108,7 +108,7 @@ class TranscodeInstrumentationSmokeTest {
         val input = generateClip("src_filters.mp4")
         val output = File(dir, "out_720.mp4").absolutePath
         val args = ArgFinalizer.finalize(
-            FfmpegArgs.build("h264-720", BuilderEncoder.SOFTWARE), // carries -vf scale=-2:720
+            FfmpegArgs.build("h264-720", BuilderEncoder.SOFTWARE), // carries the never-upscaling short-side -vf scale
             FinalizeOptions(requestedThreads = 4, emitThreads = true, normalizeAudio = true),
         )
         val done = transcode(TranscodeJob(input, output, args, 2.0, usedHardwareEncoder = false))

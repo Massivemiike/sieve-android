@@ -1,5 +1,6 @@
 package com.sieve.queue.service
 
+import com.sieve.transcode.args.ScaleFilter
 import com.sieve.transcode.runner.FfmpegProcess
 import com.sieve.transcode.runner.FfmpegProcessFactory
 import com.sieve.transcode.runner.FfmpegRunner
@@ -7,12 +8,14 @@ import com.sieve.transcode.runner.TranscodeEvent
 import com.sieve.transcode.runner.TranscodeJob
 import com.sieve.transcode.runner.android.SourceVideoInfo
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -20,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -52,12 +56,11 @@ private class FakeProc(stdout: List<String> = emptyList()) : FfmpegProcess {
  * The S26 hang: ffmpeg alive but wedged in a native MediaCodec call. It ignores `q` and SIGTERM and only SIGKILL
  * ([destroyForcibly]) ends it. [deathCode] 134 is the SIGABRT the decoder thread died of there.
  */
-private class WedgedProc(private val deathCode: Int = 137) : FfmpegProcess {
+private class WedgedProc(private val deathCode: Int = 137, override val stdout: Flow<String> = emptyList<String>().asFlow()) : FfmpegProcess {
     val exit = CompletableDeferred<Int>()
     val stdinWrites = mutableListOf<String>()
     var destroyed = 0
     var killed = 0
-    override val stdout: Flow<String> = emptyList<String>().asFlow()
     override val stderr: Flow<String> = emptyList<String>().asFlow()
     override suspend fun writeStdin(text: String) { stdinWrites.add(text) }
     override fun destroy() { destroyed++ }
@@ -68,30 +71,39 @@ private class WedgedProc(private val deathCode: Int = 137) : FfmpegProcess {
 private class RecordingFactory(private val stdout: List<String> = emptyList(), private val onStart: () -> Unit = {}) : FfmpegProcessFactory {
     /** Keyed by the `-i` input path, so a test can tell which job's process is which. */
     val spawned = ConcurrentHashMap<String, FakeProc>()
+    /** The full argv of each spawn, keyed like [spawned]. */
+    val argv = ConcurrentHashMap<String, List<String>>()
     val starts = java.util.concurrent.atomic.AtomicInteger()
     override fun start(binaryPath: String, args: List<String>): FfmpegProcess {
         onStart()
         starts.incrementAndGet()
         val p = FakeProc(stdout)
         spawned[args[args.indexOf("-i") + 1]] = p
+        argv[args[args.indexOf("-i") + 1]] = args
         return p
     }
 }
 
 /** Hands out one [WedgedProc] per start. */
-private class WedgedFactory(private val deathCode: Int = 137) : FfmpegProcessFactory {
+private class WedgedFactory(private val deathCode: Int = 137, private val stdout: Flow<String> = emptyList<String>().asFlow()) : FfmpegProcessFactory {
     val procs = java.util.concurrent.CopyOnWriteArrayList<WedgedProc>()
-    override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode).also { procs += it }
+    override fun start(binaryPath: String, args: List<String>): FfmpegProcess = WedgedProc(deathCode, stdout).also { procs += it }
 }
+
+/** ffmpeg 8.1's `-progress` block with the encoder open and no frame out: the muxer header is in total_size, out_time is N/A. */
+private const val HEADER_ONLY_BLOCK =
+    "frame=0\nfps=0.00\nstream_0_0_q=0.0\nbitrate=N/A\ntotal_size=48\nout_time_us=N/A\nout_time_ms=N/A\nout_time=N/A\n" +
+        "dup_frames=0\ndrop_frames=0\nspeed=N/A\nprogress=continue\n"
 
 /**
  * These tests wait for the runner's process on a REAL thread (the probe hops to Dispatchers.IO, the polls to Dispatchers.Default)
  * while `runTest` owns the clock: whenever the test body is suspended, the virtual clock runs ahead, and the runner's stall watchdog
  * (a virtual-time tick, 120 s of them) can expire before the real thread has answered, which then stops a perfectly healthy fake
  * process. That showed as two sporadic failures under load ("expected 0 but was 1": a `q` nobody asked for; the HW retry logged
- * "stopped making progress" instead of "crashed"). Nothing here is about the watchdog (FfmpegRunnerStallTest owns it), so it is off.
+ * "stopped making progress" instead of "crashed"). Nothing here is about the watchdog (FfmpegRunnerStallTest owns it), so it is off:
+ * both the two-minute bound and the 20 s first-progress bound of a hardware run (the fake hardware jobs below never print progress).
  */
-internal val NO_STALL = FfmpegRunner.Limits(stallTimeoutMs = Long.MAX_VALUE / 4)
+internal val NO_STALL = FfmpegRunner.Limits(stallTimeoutMs = Long.MAX_VALUE / 4, firstProgressTimeoutMs = Long.MAX_VALUE / 4)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RealTranscodePortTest {
@@ -206,6 +218,55 @@ class RealTranscodePortTest {
         assertTrue(ev.filterIsInstance<TranscodeEvent.Log>().single().line.startsWith("Hardware codec crashed, retrying"))
     }
 
+    // The owner's phone (1.0.4 RC): a hardware transcode whose codec service died before the first frame. Real time and event waits, no runTest:
+    // the wedged fake never answers, so there is no clock to race against, and the bounds are shrunk to tens of milliseconds.
+    @Test fun `a hardware run that never prints progress is stopped by the first-progress bound and retried on the CPU`() = runBlocking {
+        val factory = WedgedFactory()
+        val quick = FfmpegRunner.Limits(
+            firstProgressTimeoutMs = 150, stallCheckMs = 10, stallQuitGraceMs = 10, stallTermGraceMs = 10, reapWaitMs = 1_000, readerDrainMs = 500,
+        )
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, quick) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async(Dispatchers.Default) { p.run("A", hw).toList() }
+        withTimeout(10_000) { while (factory.procs.size < 2) delay(10) } // the first run was stopped, the CPU run started
+
+        val first = factory.procs[0]
+        assertEquals(listOf("q"), first.stdinWrites)
+        assertEquals(1, first.destroyed)
+        assertEquals(1, first.killed)
+        factory.procs[1].exit.complete(0)
+
+        val ev = withTimeout(10_000) { events.await() }
+        assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+        assertEquals(
+            listOf("Hardware codec stopped making progress, retrying on software encoder"),
+            ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+        )
+    }
+
+    // The same hang with ffmpeg still printing: its muxer header puts a non-zero total_size into every block, and that alone used to end the short bound.
+    @Test fun `a hardware run that keeps printing header-only progress blocks is still stopped by the first-progress bound`() = runBlocking {
+        val factory = WedgedFactory(stdout = flow { while (true) { emit(HEADER_ONLY_BLOCK); delay(5) } })
+        val quick = FfmpegRunner.Limits(
+            firstProgressTimeoutMs = 150, stallCheckMs = 10, stallQuitGraceMs = 10, stallTermGraceMs = 10, reapWaitMs = 1_000, readerDrainMs = 500,
+        )
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, quick) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async(Dispatchers.Default) { p.run("A", hw).toList() }
+        // The two-minute bound is the default here: only the first-progress bound can have stopped the first run within this wait.
+        withTimeout(10_000) { while (factory.procs.size < 2) delay(10) }
+
+        assertEquals(1, factory.procs[0].killed)
+        factory.procs[1].exit.complete(0)
+
+        val ev = withTimeout(10_000) { events.await() }
+        assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+        assertEquals(
+            listOf("Hardware codec stopped making progress, retrying on software encoder"),
+            ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+        )
+    }
+
     @Test fun `cancel on a process whose stdin is already closed does not throw`() = runTest(timeout = 20.seconds) {
         val factory = RecordingFactory()
         val p = port(factory)
@@ -283,5 +344,75 @@ class RealTranscodePortTest {
         awaitSpawned(factory, 1)
         factory.spawned["/a"]!!.exit.complete(0)
         assertNull(run.await().filterIsInstance<TranscodeEvent.Progress>().single().progress.percent)
+    }
+
+    // ── spawn-time scale: rows saved by an older build, and the ladder's view of the probed source ──
+    /** The ffmpeg argv [job] is spawned with when the source probes as [info]. */
+    private suspend fun CoroutineScope.spawnedArgv(job: TranscodeJob, info: SourceVideoInfo?): List<String> {
+        val factory = RecordingFactory()
+        val run = async { port(factory) { info }.run("A", job).toList() }
+        awaitSpawned(factory, 1)
+        factory.spawned[job.inputPath]!!.exit.complete(0)
+        run.await()
+        return factory.argv.getValue(job.inputPath)
+    }
+
+    private fun vfOf(argv: List<String>) = argv[argv.indexOf("-vf") + 1]
+
+    private fun kbpsOf(argv: List<String>) = argv[argv.indexOf("-b:v") + 1]
+
+    private val phoneClip = SourceVideoInfo("video/avc", 320, 240, null, durationSec = 19.0)
+
+    @Test fun `a row saved by an older build is spawned with the never-upscaling filter and its stored args are untouched`() = runTest(timeout = 20.seconds) {
+        val stored = listOf("-c:v", "libx264", "-crf", "22", "-vf", "scale=-2:720", "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", stored, 19.0, false), phoneClip)
+
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertFalse("the old upscaling filter reached ffmpeg: $argv", argv.any { "scale=-2:" in it })
+        assertEquals("the stored args are the persisted bytes", "scale=-2:720", stored[stored.indexOf("-vf") + 1])
+    }
+
+    @Test fun `a row that already carries the new filter is spawned with it as it is`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "libx264", "-crf", "22", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, false), phoneClip)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+    }
+
+    @Test fun `the hardware bitrate follows the probed short side - a small clip is not given the 720p rate`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val small = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), phoneClip)       // stays 320x240
+        assertEquals("897k", kbpsOf(small))
+        assertFalse("-crf" in small || "-preset" in small)
+    }
+
+    @Test fun `a portrait phone clip is on the same hardware tier as a landscape one`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val landscape = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), SourceVideoInfo("video/avc", 1920, 1080))
+        val portrait = spawnedArgv(TranscodeJob("/b", "/work/out.mp4", args, 19.0, true), SourceVideoInfo("video/avc", 1080, 1920))
+        assertEquals("3928k", kbpsOf(landscape))
+        assertEquals("3928k", kbpsOf(portrait)) // the height rule would have read 1920 -> the 1440 tier
+    }
+
+    @Test fun `the probed width matters - a small portrait clip is sized by its width, not by its height`() = runTest(timeout = 20.seconds) {
+        // 272x480 into "1080p" stays 272x480: a 272-class frame (800 kbps floor, CRF 20 -> 1131k), not the 480 height's 2545k
+        val tier1080 = listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080))
+        assertEquals("1131k", kbpsOf(spawnedArgv(TranscodeJob("/a", "/work/out.mp4", tier1080, 19.0, true), SourceVideoInfo("video/avc", 272, 480))))
+        // a preset with no scale (the "Source" ones): 720x1280 is a 720-class frame (3500 * 2^(3/6) = 4949k), not the 1080 tier of its 1280 height
+        val source = listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-c:a", "aac")
+        assertEquals("4949k", kbpsOf(spawnedArgv(TranscodeJob("/b", "/work/out.mp4", source, 19.0, true), SourceVideoInfo("video/avc", 720, 1280))))
+    }
+
+    @Test fun `an older hardware row is repaired first and then sized by what it will really encode`() = runTest(timeout = 20.seconds) {
+        val old = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", "scale=-2:720", "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", old, 19.0, true), phoneClip)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertEquals("897k", kbpsOf(argv)) // the old filter's 720 would have asked for 3928k
+    }
+
+    @Test fun `an unreadable source still gets the filter and the preset tier's bitrate`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720))
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), null)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertEquals("3928k", kbpsOf(argv))
     }
 }

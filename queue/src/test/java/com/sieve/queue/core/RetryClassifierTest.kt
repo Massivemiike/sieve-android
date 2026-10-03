@@ -7,7 +7,7 @@ import org.junit.runners.Parameterized
 
 /**
  * Download failures are decided by the same yt-dlp rule table the user-facing message comes from
- * (desktop `human.transient`: rate limit, 403, network). The table has no 5xx or fragment rule, so
+ * (desktop `human.transient`: rate limit, 403, network; plus SoundCloud's passing WAF block). The table has no 5xx or fragment rule, so
  * those are PERMANENT here exactly as on desktop.
  */
 @RunWith(Parameterized::class)
@@ -32,6 +32,11 @@ class RetryClassifierTest(private val msg: String, private val expected: RetryCl
                 RetryClass.TRANSIENT,
             ),
             arrayOf("ERROR: [vimeo] 1: Unable to download JSON metadata: <urlopen error [Errno 111] Connection refused>", RetryClass.TRANSIENT),
+            // SoundCloud's WAF block passes after a while: the client-id failure it causes is retryable like a 403 or a timeout.
+            arrayOf("ERROR: [soundcloud] Unable to extract client id", RetryClass.TRANSIENT),
+            arrayOf("ERROR: Unable to extract client id", RetryClass.TRANSIENT),
+            arrayOf("ERROR: [soundcloud] ethmusic/she-so-heavy: Failed to parse JSON (caused by JSONDecodeError(\"Expecting value\"))", RetryClass.TRANSIENT),
+            arrayOf("ERROR: [youtube] abc: Failed to parse JSON (caused by JSONDecodeError(\"Expecting value\"))", RetryClass.PERMANENT),
             arrayOf("HTTP Error 404: Not Found", RetryClass.PERMANENT),
             arrayOf("This video is private", RetryClass.PERMANENT),
             arrayOf("Requested format is not available", RetryClass.PERMANENT),
@@ -64,6 +69,18 @@ class RetryClassifierExitTest {
     @Test fun `a 403 is transient like on desktop`() {
         val msg = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
         assertEquals(RetryClass.TRANSIENT, download(FailureInfo(msg, exitCode = 1, stderrTail = msg)))
+    }
+
+    // The failure the owner's phone had for ~15 minutes while CloudFront's WAF blocked SoundCloud, as JobDriver hands it to the
+    // queue: the ERROR line as the message, the whole blob (with its non-fatal WARNING lines) as the tail.
+    @Test fun `a SoundCloud WAF block is transient, warnings around it or not`() {
+        val msg = "ERROR: [soundcloud] Unable to extract client id; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , " +
+            "filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+        val blob = "[soundcloud] Extracting URL: https://soundcloud.com/ethmusic/lostin-powers-she-so-heavy\n" +
+            "[soundcloud] None: Downloading main page\n" +
+            "WARNING: [soundcloud] None: Unable to download webpage: HTTP Error 404: Not Found\n" + msg + "\n"
+        assertEquals(RetryClass.TRANSIENT, download(FailureInfo(msg, exitCode = 1, stderrTail = blob)))
+        assertEquals(RetryClass.TRANSIENT, download(FailureInfo(msg, exitCode = 1)))
     }
 
     @Test fun `generic exit message stays permanent`() {

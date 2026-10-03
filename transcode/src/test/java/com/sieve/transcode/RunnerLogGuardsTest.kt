@@ -155,4 +155,27 @@ class RunnerLogGuardsTest {
             assertFalse(block.toString(), w.version == v)
         }
     }
+
+    @Test fun `the output size moves the watch but is not media progress`() {
+        val w = ProgressWatch()
+        assertFalse(w.mediaAdvanced)
+        w.observe(p(out = 0, frame = 0, size = 48)) // ffmpeg 8.1 with the encoder open: the muxer header is written, nothing is encoded yet
+        assertTrue("it is an advance for the two-minute watchdog", w.version != 0L)
+        assertFalse(w.mediaAdvanced)
+        w.observe(p(out = 0, frame = 0, size = 4_096)) // more bytes, still no frame
+        assertFalse(w.mediaAdvanced)
+        w.observe(p(out = 0, frame = null, size = null))
+        assertFalse(w.mediaAdvanced)
+    }
+
+    @Test fun `an out_time, a frame count or the end block is media progress, each on its own, and it stays`() {
+        for (block in listOf(p(out = 1), p(frame = 1), p(end = true))) {
+            val w = ProgressWatch()
+            assertFalse(w.mediaAdvanced)
+            w.observe(block)
+            assertTrue(block.toString(), w.mediaAdvanced)
+            w.observe(p(out = 0, frame = 0, size = 48)) // a later start-up-looking block does not take it back
+            assertTrue(block.toString(), w.mediaAdvanced)
+        }
+    }
 }

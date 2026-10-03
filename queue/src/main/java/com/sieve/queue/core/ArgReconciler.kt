@@ -43,19 +43,85 @@ object ArgReconciler {
         a = stripFlagValue(a, "--paths")
         a = stripFlagValue(a, "-o")
         a = stripFlagValue(a, "--output")
-        a = a + listOf("-P", prepared.workDir, "-o", byteSafeTemplate(prepared.workFileTemplate))
+        a = stripExactPair(a, PARSE_METADATA, TITLE_COPY_ACTION) // idempotent: never two copies of our own action
+        val template = byteSafeTemplate(prepared.workFileTemplate)
+        a = a + listOf("-P", prepared.workDir, "-o", template) + titleCopyArgsFor(template)
         // A user-chosen archive wins; otherwise the job's own, so Retry never re-downloads finished entries.
         val archive = prepared.archivePath
         return if (archive != null && "--download-archive" !in a) a + listOf("--download-archive", archive) else a
     }
 
     /**
-     * Clamp an unbounded `%(title)s` to 150 bytes at spawn time, so jobs persisted with the old
-     * template (e.g. a failed Facebook download being retried) can't overflow ext4's 255-byte
-     * filename limit either.
+     * yt-dlp scratch field the file name is cut from: the title after yt-dlp's OWN filename sanitizer
+     * (`%(title)S`). Not `title` itself, so the embedded tags and the info JSON keep the real title. The `__`
+     * prefix makes it a PRIVATE field: yt-dlp drops every `__` key when it writes an `.info.json`, so the scratch
+     * copy never lands in the user's archive as a foreign key (a plain `sieve_title` did).
      */
-    fun byteSafeTemplate(template: String): String =
-        template.replace("%(title)s", "%(title).${YtdlpArgs.TITLE_MAX_BYTES}B")
+    const val NAME_TITLE_FIELD = "__sieve_title"
+
+    /**
+     * What the name template cuts: `a,b` is yt-dlp's alternative - [NAME_TITLE_FIELD] when set, the real `title`
+     * otherwise. The fallback is load-bearing: `--parse-metadata` only runs on VIDEOS, but yt-dlp names the
+     * playlist-level files (`--write-info-json` on a playlist or channel URL, as the Archive preset does, also writes
+     * `<playlist title> [<playlist id>].info.json`) from this same `-o`, evaluated on the PLAYLIST - which has no
+     * scratch field. Without the fallback that file would be saved as `NA [<playlist id>].info.json`.
+     */
+    private const val NAME_TITLE_REF = "$NAME_TITLE_FIELD,title"
+
+    /**
+     * UTF-8 bytes of title kept in a file name. ext4 caps a name at 255 bytes, and yt-dlp appends
+     * ` [id]` and, while it works, `.f<format-id>.<ext>.part` (fragmented streams: `.part-Frag<n>.part`)
+     * - so this leaves 105 bytes for all of that.
+     *
+     * Two bounds this does NOT cover, both as in 1.0.3 (see FilenameByteBudgetTest):
+     *  - the `[id]` is uncut: the 105 bytes hold ids up to about 40 bytes next to the longest side file name
+     *    (about 85 for a plain `.part`), which covers the sites Sieve is tested on. Only the generic and direct-link
+     *    extractors derive a long id (the URL's file name);
+     *  - a PLAYLIST's own title has no scratch copy (see [NAME_TITLE_REF]), so a playlist-level `.info.json` still
+     *    cuts the raw title: one made almost entirely of `? | :` can still overflow. Single videos are exact.
+     */
+    const val TITLE_BUDGET_BYTES = YtdlpArgs.TITLE_MAX_BYTES
+
+    private const val PARSE_METADATA = "--parse-metadata"
+    private const val TITLE_COPY_ACTION = "%(title)S:%($NAME_TITLE_FIELD)s"
+
+    /** `%(title)s` (the older unbounded default) or `%(title).<n>B` (today's default, n = 150); captures n. */
+    private val UNSAFE_TITLE = Regex("""%\(title\)(?:s|\.(\d+)B)""")
+
+    /**
+     * Make the title part of a file name byte-exact at spawn time, so jobs persisted with `%(title)s`
+     * (a failed Facebook download being retried) or with `%(title).150B` cannot overflow ext4's 255-byte
+     * limit. yt-dlp evaluates `%(title).150B` (cut raw bytes) BEFORE it sanitizes the result, and
+     * sanitizing swaps each of `" * : < > ? | / \` for a 3-byte full-width look-alike - so a title of
+     * mostly such characters grew from 150 B to 450 B. Cutting [NAME_TITLE_FIELD] (already sanitized) is
+     * exact, and the look-alikes stay exactly yt-dlp's own, as on Windows.
+     *
+     * A cut a row already carries stays when it is tighter than [TITLE_BUDGET_BYTES] (it now counts sanitized bytes,
+     * so it can only be safer); a looser or missing one becomes [TITLE_BUDGET_BYTES]. Internal: the output belongs
+     * with [titleCopyArgsFor], which [injectDownloadOutput] always adds; alone it would just cut the raw title.
+     */
+    internal fun byteSafeTemplate(template: String): String =
+        template.replace(UNSAFE_TITLE) { m ->
+            val keep = m.groupValues[1].toIntOrNull()?.coerceAtMost(TITLE_BUDGET_BYTES) ?: TITLE_BUDGET_BYTES
+            "%($NAME_TITLE_REF).${keep}B"
+        }
+
+    /**
+     * `--parse-metadata %(title)S:%(__sieve_title)s` when [template] reads that field; nothing otherwise. The target
+     * is spelled `%(field)s`: the yt-dlp inside the APK (2025.11.12) reads a bare `__sieve_title` as a literal regex
+     * and sets nothing. The log gains one `[MetadataParser] Parsed ...` line per video.
+     */
+    private fun titleCopyArgsFor(template: String): List<String> =
+        if (template.contains("%($NAME_TITLE_FIELD")) listOf(PARSE_METADATA, TITLE_COPY_ACTION) else emptyList()
+
+    private fun stripExactPair(args: List<String>, flag: String, value: String): List<String> {
+        val out = ArrayList<String>(args.size)
+        var i = 0
+        while (i < args.size) {
+            if (args[i] == flag && i + 1 < args.size && args[i + 1] == value) i += 2 else { out += args[i]; i++ }
+        }
+        return out
+    }
 
     /**
      * The shortest thing yt-dlp can add to "<title> [<id>]" while a download is in flight: the " [" and "]" around a
@@ -73,8 +139,15 @@ object ArgReconciler {
      */
     private const val FACEBOOK_NAME_OVERHEAD_BYTES = 47
 
-    /** Is the job's template one that still lets a title run to any length (the old default, which [byteSafeTemplate] clamps)? */
-    private fun unclampedTitle(template: String): Boolean = byteSafeTemplate(template) != template
+    /** The old default's unbounded title field: rows saved before 1.0.4 carry it (the clamp is applied when yt-dlp is spawned, never stored). */
+    private const val UNBOUNDED_TITLE = "%(title)s"
+
+    /**
+     * Is the job's template one that still lets a title run to any length (the old default, which [byteSafeTemplate] clamps at
+     * spawn)? Deliberately not "does [byteSafeTemplate] change it": that also rewrites a template that already cuts the title
+     * (`%(title).150B`, today's default) to cut the sanitized copy, so it would put every row's title under suspicion.
+     */
+    private fun unclampedTitle(template: String): Boolean = UNBOUNDED_TITLE in template
 
     private fun titleBytes(title: String): Int = title.toByteArray(Charsets.UTF_8).size
 
