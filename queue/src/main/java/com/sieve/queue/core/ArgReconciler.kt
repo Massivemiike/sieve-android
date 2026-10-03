@@ -92,9 +92,10 @@ object ArgReconciler {
      * exact, and the look-alikes stay exactly yt-dlp's own, as on Windows.
      *
      * A cut a row already carries stays when it is tighter than [TITLE_BUDGET_BYTES] (it now counts sanitized bytes,
-     * so it can only be safer); a looser or missing one becomes [TITLE_BUDGET_BYTES]. Needs [titleCopyArgsFor].
+     * so it can only be safer); a looser or missing one becomes [TITLE_BUDGET_BYTES]. Internal: the output belongs
+     * with [titleCopyArgsFor], which [injectDownloadOutput] always adds; alone it would just cut the raw title.
      */
-    fun byteSafeTemplate(template: String): String =
+    internal fun byteSafeTemplate(template: String): String =
         template.replace(UNSAFE_TITLE) { m ->
             val keep = m.groupValues[1].toIntOrNull()?.coerceAtMost(TITLE_BUDGET_BYTES) ?: TITLE_BUDGET_BYTES
             "%($NAME_TITLE_REF).${keep}B"
