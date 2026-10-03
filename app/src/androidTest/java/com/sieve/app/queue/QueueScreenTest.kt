@@ -3,6 +3,7 @@ package com.sieve.app.queue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -156,5 +157,30 @@ class QueueScreenTest {
         }
         rule.onNodeWithTag("open_done").performClick()
         assertEquals(listOf("done"), opened)
+    }
+
+    // --- a paused row keeps showing how far it got ------------------------------------------------------------
+
+    private fun pausedRow(progress: UnifiedProgress) =
+        QueueUiState.from(QueueState(jobs = listOf(job("p", DownloadStatus.PAUSED).copy(progress = progress))))
+
+    @Test
+    fun aPausedRowShowsItsPercentAndBarButNoSpeedOrTimeLeft() {
+        val state = pausedRow(UnifiedProgress(fraction = 0.42f, speed = "1.0MiB/s", eta = "paused"))
+        rule.setContent { SieveTheme { QueueScreen(state, onPause = {}, onResume = {}, onRetry = {}, onCancel = {}) } }
+
+        rule.onNodeWithTag("bar_p").assertIsDisplayed()
+        rule.onNodeWithTag("progress_p").assertTextEquals("42%")
+        rule.onNodeWithTag("resume_p").assertIsDisplayed()
+    }
+
+    @Test
+    fun aPausedRowRestoredFromTheDatabaseShowsNoBarAndNoPercent() {
+        val state = pausedRow(UnifiedProgress(eta = "paused"))   // progress is stored as 0 or 1 only: nothing to show
+        rule.setContent { SieveTheme { QueueScreen(state, onPause = {}, onResume = {}, onRetry = {}, onCancel = {}) } }
+
+        rule.onNodeWithTag("job_p").assertIsDisplayed()
+        rule.onNodeWithTag("bar_p").assertDoesNotExist()
+        rule.onNodeWithTag("progress_p").assertDoesNotExist()
     }
 }

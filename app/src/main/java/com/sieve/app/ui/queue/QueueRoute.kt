@@ -192,7 +192,6 @@ private fun JobRow(
     onOpen: (QueueJob) -> Unit,
 ) {
     val cs = MaterialTheme.colorScheme
-    val running = job.status == DownloadStatus.RUNNING || job.status == DownloadStatus.PREPARING
     Column(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp)).background(cs.surface)
             .border(1.dp, cs.outline, RoundedCornerShape(13.dp)).testTag("job_${job.id}").padding(11.dp),
@@ -236,11 +235,12 @@ private fun JobRow(
                 }
             }
         }
-        if (running) {
-            SieveProgress(job.progress.fraction)
-            val pct = job.progress.fraction?.let { "${(it * 100).toInt()}%" } ?: "—"
-            val meta = listOfNotNull(pct, job.progress.speed, job.progress.eta?.let { "$it left" }).joinToString(" · ")
-            Text(meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
+        rowProgress(job)?.let { rp ->
+            SieveProgress(rp.fraction, Modifier.testTag("bar_${job.id}"))
+            Text(
+                rp.meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant,
+                modifier = Modifier.testTag("progress_${job.id}"),
+            )
         }
         if (job.status == DownloadStatus.FAILED && !job.error.isNullOrBlank()) {
             // job.error is yt-dlp's raw ERROR text (kept raw so retry classification sees real signals).
