@@ -11,7 +11,7 @@ data class RetryPolicy(val maxAutoRetries: Int = 1, val backoffMs: Long = 5_000L
  *
  * Downloads are decided exactly as on desktop (`human.transient` in App.tsx): by the same yt-dlp rule
  * table that words the message the user reads ([YtdlpErrors], in rule order — rate limit, 403 and network
- * failures are transient, private/login/geo/removed are not). It matches yt-dlp's ERROR lines only (a
+ * failures, and SoundCloud's passing WAF block, are transient; private/login/geo/removed are not). It matches yt-dlp's ERROR lines only (a
  * WARNING line never decides) with URLs blanked, so a slug like `/login/` or `/403-error` can't either.
  * Everything else is PERMANENT: never auto-retry something we don't recognize.
  *

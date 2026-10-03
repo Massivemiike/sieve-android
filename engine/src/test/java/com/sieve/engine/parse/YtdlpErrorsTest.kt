@@ -10,6 +10,24 @@ class YtdlpErrorsTest {
 
     private fun h(raw: String?) = YtdlpErrors.humanize(raw)
 
+    private companion object {
+        const val SOUNDCLOUD_BLOCKED = "SoundCloud is temporarily blocking requests"
+        const val BUG_REPORT_TAIL = "; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , " +
+            "filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U"
+
+        // The three ways yt-dlp's soundcloud extractor fails while CloudFront's WAF answers every request with an empty 202.
+        // Worded exactly as yt-dlp prints them (run through YoutubeDL with the extractor's downloads stubbed out).
+        /** No cached client id: the main page has no scripts, so none can be read. What the owner's phone showed. */
+        const val SOUNDCLOUD_NO_CLIENT_ID = "ERROR: [soundcloud] Unable to extract client id$BUG_REPORT_TAIL"
+        /** A cached client id, and the API says 403 (the extractor refreshes the id once, which fails the same way, then raises). */
+        const val SOUNDCLOUD_API_403 =
+            "ERROR: [soundcloud] Unable to download JSON metadata: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)$BUG_REPORT_TAIL"
+        /** A cached client id, and the API answers with an empty body instead of JSON. */
+        const val SOUNDCLOUD_API_NOT_JSON =
+            "ERROR: [soundcloud] ethmusic/lostin-powers-she-so-heavy: Failed to parse JSON " +
+                "(caused by JSONDecodeError(\"Expecting value in '': line 1 column 1 (char 0)\"))$BUG_REPORT_TAIL"
+    }
+
     // ---- one case per rule, in table order -------------------------------------------------
 
     private class Case(val raw: String, val kind: ErrorKind, val message: String, val transient: Boolean = false)
@@ -87,6 +105,10 @@ class YtdlpErrorsTest {
             ErrorKind.RATE, "Rate-limited by the site", transient = true,
         ),
         Case("ERROR: [x] y: the site is throttling this client", ErrorKind.RATE, "Rate-limited by the site", transient = true),
+        Case(SOUNDCLOUD_NO_CLIENT_ID, ErrorKind.BLOCKED, SOUNDCLOUD_BLOCKED, transient = true),
+        Case("ERROR: Unable to extract client id", ErrorKind.BLOCKED, SOUNDCLOUD_BLOCKED, transient = true),
+        Case(SOUNDCLOUD_API_403, ErrorKind.BLOCKED, SOUNDCLOUD_BLOCKED, transient = true),
+        Case(SOUNDCLOUD_API_NOT_JSON, ErrorKind.BLOCKED, SOUNDCLOUD_BLOCKED, transient = true),
         Case(
             "ERROR: unable to download video data: HTTP Error 403: Forbidden",
             ErrorKind.BLOCKED, "Access denied (403)", transient = true,
@@ -157,6 +179,65 @@ class YtdlpErrorsTest {
         assertEquals("Retry, or update yt-dlp in Settings.", h("ERROR: HTTP Error 403").hint)
         assertEquals("Open the video itself and copy its address.", h("ERROR: Unsupported URL: x").hint)
         assertEquals("Pick \"Best video + audio\" or another preset.", h("ERROR: Requested format is not available").hint)
+    }
+
+    // ---- SoundCloud's WAF block ---------------------------------------------------------------
+
+    @Test fun soundcloudWafBlockSaysSoAndWhenToTryAgain() {
+        for (raw in listOf(SOUNDCLOUD_NO_CLIENT_ID, SOUNDCLOUD_API_403, SOUNDCLOUD_API_NOT_JSON)) {
+            val r = h(raw)
+            assertEquals(SOUNDCLOUD_BLOCKED, r.message, raw)
+            assertEquals("Try again in a few minutes.", r.hint, raw)
+            assertEquals(ErrorKind.BLOCKED, r.kind, raw)
+            assertTrue(r.transient, "it passes by itself, so it is worth the one automatic retry: $raw")
+            assertEquals("SoundCloud is temporarily blocking requests — Try again in a few minutes.", YtdlpErrors.format(r), raw)
+        }
+    }
+
+    @Test fun soundcloudBlockStillWinsWhenTheLogHasWarningsAround() {
+        // Analyze keeps its warnings; the non-fatal "Downloading JS asset" failures come first and are not the verdict.
+        val raw = "[soundcloud] None: Downloading main page\n" +
+            "WARNING: [soundcloud] None: Unable to download webpage: HTTP Error 404: Not Found\n" +
+            SOUNDCLOUD_NO_CLIENT_ID + "\n"
+        assertEquals(SOUNDCLOUD_BLOCKED, h(raw).message)
+    }
+
+    @Test fun everySoundcloudExtractorCountsNotJustTracks() {
+        for (ie in listOf("soundcloud:set", "soundcloud:user", "soundcloud:playlist")) {
+            assertEquals(
+                SOUNDCLOUD_BLOCKED,
+                h("ERROR: [$ie] artist/sets/mix: Unable to download JSON metadata: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)").message,
+                ie,
+            )
+        }
+    }
+
+    @Test fun otherSitesKeepTheirOwnVerdictForTheSameWording() {
+        // A 403 anywhere else is still the generic "Access denied"; "Failed to parse JSON" elsewhere is not a block.
+        assertEquals(
+            "Access denied (403)",
+            h("ERROR: [vimeo] 76979871: Unable to download JSON metadata: HTTP Error 403: Forbidden (caused by <HTTPError 403: Forbidden>)").message,
+        )
+        val json = h("ERROR: [youtube] abc: Failed to parse JSON (caused by JSONDecodeError(\"Expecting value\"))")
+        assertEquals(ErrorKind.OTHER, json.kind)
+        assertFalse(json.transient)
+        // A SoundCloud link inside another site's error is a URL, and URLs never decide.
+        assertEquals(
+            "Access denied (403)",
+            h("ERROR: [generic] Unable to download webpage: HTTP Error 403: Forbidden (https://soundcloud.com/some/track)").message,
+        )
+    }
+
+    @Test fun soundcloudErrorsThatAreNotTheBlockKeepTheirOwnRule() {
+        assertEquals(
+            ErrorKind.REMOVED,
+            h("ERROR: [soundcloud] artist/gone: Unable to download JSON metadata: HTTP Error 404: Not Found (caused by <HTTPError 404: Not Found>)").kind,
+        )
+        assertEquals(
+            ErrorKind.RATE,
+            h("ERROR: [soundcloud] 123: Unable to download JSON metadata: HTTP Error 429: Too Many Requests (caused by <HTTPError 429: Too Many Requests>)").kind,
+        )
+        assertEquals(ErrorKind.GEO, h("ERROR: [soundcloud] 123: This track is not available in your country").kind)
     }
 
     // ---- rule order -------------------------------------------------------------------------

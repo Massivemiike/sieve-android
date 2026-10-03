@@ -42,6 +42,16 @@ class ErrorHumanizerTest {
             ErrorHumanizer.humanize("ERROR: unable to download video data: HTTP Error 403: Forbidden"),
         )
 
+    // What the Queue row shows for the SoundCloud failure the owner's phone had for ~15 minutes (CloudFront's WAF).
+    @Test fun soundcloudWafBlockIsPlainAndSaysWhenToRetry() =
+        assertEquals(
+            "SoundCloud is temporarily blocking requests — Try again in a few minutes.",
+            ErrorHumanizer.humanize(
+                "ERROR: [soundcloud] Unable to extract client id; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , " +
+                    "filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U",
+            ),
+        )
+
     @Test fun messageOnlyWhenThereIsNoHint() =
         assertEquals("The disk is full", ErrorHumanizer.humanize("ERROR: [Errno 28] No space left on device"))
 

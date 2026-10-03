@@ -60,6 +60,7 @@ import com.sieve.app.ui.common.SieveProgress
 import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.Phase
 import com.sieve.queue.core.QueueJob
+import com.sieve.queue.core.displayTitle
 import com.sieve.queue.service.OutputIntents
 import kotlinx.coroutines.launch
 
@@ -205,7 +206,7 @@ private fun JobRow(
             )
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text(
-                    job.title.ifBlank { job.spec.let { "Download" } },
+                    job.displayTitle,
                     style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
                 )
                 StateChip(job)

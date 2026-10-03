@@ -125,6 +125,17 @@ object YtdlpErrors {
             "HTTP Error 429|too many requests|rate[- ]limit|throttl",
             HumanError(ErrorKind.RATE, "Rate-limited by the site", "Wait a few minutes and retry.", transient = true),
         ),
+        // SoundCloud's CloudFront WAF now and then challenges every request for a while (an empty 202 instead of the page, which
+        // is also what the owner's phone saw for ~15 minutes). yt-dlp's soundcloud extractor cannot tell that from a bad client id:
+        //  - no `client_id` in the main page or its scripts -> "Unable to extract client id" (the extractor's only client-id error);
+        //  - a cached client id, and the API answers 403 (it refreshes the id once, then fails) or with a body that is not JSON
+        //    ("Failed to parse JSON"). Those two are tied to `[soundcloud...]`: elsewhere they mean something else, and a 403 from
+        //    any other site keeps the generic rule below.
+        // It passes by itself, so it is transient: the queue's one automatic retry and the Retry button are both right.
+        rule(
+            "unable to extract client id|\\[soundcloud[^\\]]*\\][^\\n]*(?:failed to parse JSON|HTTP Error 403|\\bforbidden\\b)",
+            HumanError(ErrorKind.BLOCKED, "SoundCloud is temporarily blocking requests", "Try again in a few minutes.", transient = true),
+        ),
         rule(
             "HTTP Error 403|\\bforbidden\\b",
             HumanError(ErrorKind.BLOCKED, "Access denied (403)", "Retry, or update yt-dlp in Settings.", transient = true),

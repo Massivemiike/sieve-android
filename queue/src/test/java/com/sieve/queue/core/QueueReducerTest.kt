@@ -125,6 +125,26 @@ class QueueReducerTest {
         assertEquals(DownloadStatus.QUEUED, s.job("a")!!.status)
     }
 
+    // SoundCloud's WAF block (the owner's phone had it for ~15 minutes): one automatic retry, then a Failed row that keeps yt-dlp's
+    // raw text (the UI words it) so the Retry button and the retry rules still see the real signal.
+    @Test fun `a SoundCloud WAF block auto-retries once, then fails with the raw text kept`() {
+        val raw = "ERROR: [soundcloud] Unable to extract client id; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q="
+        fun failed(job: QueueJob) = r(
+            QueueState(jobs = listOf(job)),
+            QueueEvent.Signal(JobSignal.Terminal(job.id, Outcome.Failed(FailureInfo(raw, exitCode = 1, stderrTail = raw)))),
+        ).job(job.id)!!
+
+        val first = failed(dl("a", DownloadStatus.RUNNING))
+        assertEquals(DownloadStatus.QUEUED, first.status)
+        assertEquals(1, first.attempt)
+        assertNull(first.error)
+        assertTrue("it waits out the backoff before the retry", first.nextEligibleAt > 0L)
+
+        val second = failed(dl("a", DownloadStatus.RUNNING, attempt = 1))
+        assertEquals(DownloadStatus.FAILED, second.status)
+        assertEquals(raw, second.error)
+    }
+
     @Test fun `a transcode failure keeps the ffmpeg-side verdict`() {
         val s = r(
             QueueState(jobs = listOf(tx("t", DownloadStatus.RUNNING))),

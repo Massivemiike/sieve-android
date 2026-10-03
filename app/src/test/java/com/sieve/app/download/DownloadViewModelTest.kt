@@ -142,7 +142,53 @@ class DownloadViewModelTest {
         vm.download(); advanceUntilIdle()
         assertEquals(1, sink.size)
         assertTrue((sink.first().spec as JobSpec.Download).engineArgs.contains("-f"))
-        assertEquals("", sink.first().title) // no analyzed info
+        assertEquals("https://x/y", sink.first().title) // no analyzed info: the row is titled by its link, as on the desktop
+    }
+
+    // ---- a row with no title of its own is titled by its link (desktop: `analyzedVideo?.title || url`) ----
+
+    private val soundcloudLink = "https://soundcloud.com/ethmusic/lostin-powers-she-so-heavy"
+
+    // CloudFront's WAF blocked SoundCloud for ~15 minutes on the owner's phone: the analyze failed, the row was titled "Download".
+    @Test fun aSoundcloudWafBlockIsExplainedOnTheBannerAndTheRowIsTitledByItsLink() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = vm(
+            AnalyzeOutcome.Failure(
+                "ERROR: [soundcloud] Unable to extract client id; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , " +
+                    "filling out the appropriate issue template. Confirm you are on the latest version using  yt-dlp -U",
+            ),
+            sink,
+        )
+        vm.onUrlChange(soundcloudLink)
+        vm.analyze(); advanceUntilIdle()
+        assertEquals("SoundCloud is temporarily blocking requests", vm.state.value.error)
+        assertEquals("Try again in a few minutes.", vm.state.value.errorHint)
+        assertTrue(vm.state.value.canDownload, "the failed reading does not stop the download")
+
+        vm.download(); advanceUntilIdle()
+        assertEquals(soundcloudLink, sink.single().title)
+        assertEquals("Unknown", sink.single().site)
+    }
+
+    @Test fun theLinkThatTitlesARowIsTheTrimmedOneTheDownloadRuns() = runTest {
+        val sink = mutableListOf<QueueJob>()
+        val vm = vm(AnalyzeOutcome.Failure("x"), sink)
+        vm.onUrlChange("  $soundcloudLink \n")
+        vm.download(); advanceUntilIdle()
+        assertEquals(soundcloudLink, sink.single().title)
+        assertEquals(soundcloudLink, (sink.single().spec as JobSpec.Download).url)
+    }
+
+    @Test fun anAnalysisThatHasNoTitleFallsBackToTheLinkToo() = runTest {
+        for (untitled in listOf(null, "", "   ")) {
+            val sink = mutableListOf<QueueJob>()
+            val vm = vm(AnalyzeOutcome.Success(info.copy(title = untitled)), sink)
+            vm.onUrlChange(soundcloudLink)
+            vm.analyze(); advanceUntilIdle()
+            vm.download(); advanceUntilIdle()
+            assertEquals(soundcloudLink, sink.single().title, "title=$untitled")
+            assertEquals("youtube", sink.single().site, "the rest of the reading still describes the row")
+        }
     }
 
     // ---- Windows download defaults: embed metadata + cover art, 4 parallel fragments ----
@@ -290,7 +336,7 @@ class DownloadViewModelTest {
 
         val job = sink.single()
         assertEquals("https://vimeo.com/999", (job.spec as JobSpec.Download).url)
-        assertEquals("", job.title)
+        assertEquals("https://vimeo.com/999", job.title) // the new link's own title, not the old video's
         assertEquals("", job.channel)
         assertEquals("Unknown", job.site)
         assertEquals("", job.thumbnailUrl)
@@ -340,7 +386,7 @@ class DownloadViewModelTest {
         engine.gate!!.complete(Unit); advanceUntilIdle()
         assertNull(vm.state.value.analyzed)
         assertEquals("", vm.state.value.url)
-        assertEquals("", sink.single().title)
+        assertEquals("https://youtube.com/watch?v=abc", sink.single().title)
     }
 
     @Test fun aNewAnalyzeStartsFromNothingSoAFailureLeavesNoStaleCard() = runTest {
