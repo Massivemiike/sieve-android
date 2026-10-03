@@ -176,7 +176,8 @@ class DownloadViewModelTest {
 
     private val toggles = listOf("--embed-metadata", "--embed-thumbnail", "-N", "4")
     private val spawnTail = listOf("-P", "/work/id", "-o", "%(title).150B [%(id)s].%(ext)s")
-    private val mp4Format = "bv[vcodec~='^(avc|h264)']+ba/b[vcodec~='^(avc|h264)']/b[format_id=sd][ext=mp4]/bv*+ba/b"
+    private val mp4Format = "bv[vcodec~='^(avc|h264)']+ba/b[vcodec~='^(avc|h264)']/" +
+        "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']/b[format_id=sd][ext=mp4]/bv*+ba/b"
 
     private val goldenSpawnArgs = mapOf(
         "best-video" to listOf("-c", "-f", "bestvideo*+bestaudio/best") + toggles + spawnTail,

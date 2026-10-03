@@ -28,7 +28,9 @@ class DownloadPresetsTest {
         val expected = listOf(
             "bv$h264+ba", // known H.264 video + separate audio (YouTube, Instagram, X, Vimeo)
             "b$h264", // a known-H.264 file that carries its own audio (Dailymotion)
-            "b[format_id=sd][ext=mp4]", // Facebook: only its progressive sd is H.264 (hd is VP9)
+            // Facebook's progressive hd, only when its CDN tag says H.264 (an old video's hd, never the VP9 re-encode)
+            "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']",
+            "b[format_id=sd][ext=mp4]", // Facebook: its progressive sd is H.264 on every video probed
             "bv*+ba", // no H.264 at all: any video + audio
             "b", // ...and anything, so a download never fails with "format not available"
         )
@@ -36,6 +38,45 @@ class DownloadPresetsTest {
             assertEquals(expected, DownloadPresets.byId(id).format.split('/'), id)
             assertEquals(DownloadPresets.MP4_FORMAT, DownloadPresets.byId(id).format, id)
         }
+    }
+
+    /** The tag Facebook's CDN puts last in a progressive stream's URL, and what ffprobe found in the file behind it. */
+    private val probedFacebookHdTags = mapOf(
+        "hd" to "h264", // an old video (uploaded about twelve years ago): H.264 High 1280x720
+        "dash_h264-basic-gen2_720p" to "h264", // H.264 High 720x1280, beside VP9 DASH video
+        "compressed_source" to "vp9", // reel 480x848, video 1080x1080, video 1080x1920 (three videos)
+        "av1_compressed_source" to "av1", // by its name (the 1080p+ file could not be probed from a partial download)
+    )
+
+    /** yt-dlp's `[url~='...']` is `re.search`; Kotlin's `containsMatchIn` is the same for this regex's plain syntax. */
+    private fun hdTagRegex(): Regex = Regex(DownloadPresets.FB_H264_HD_TAG)
+
+    @Test fun theFacebookHdRuleIsInTheChainAndUsesTheTagRegex() {
+        for (id in listOf("best-1080", "best-720")) {
+            assertTrue("[url~='${DownloadPresets.FB_H264_HD_TAG}']" in DownloadPresets.byId(id).format, id)
+        }
+    }
+
+    @Test fun onlyAFacebookHdWhoseTagSaysH264IsTaken() {
+        val re = hdTagRegex()
+        for ((tag, codec) in probedFacebookHdTags) {
+            val url = "https://video-sjc6-1.xx.fbcdn.net/o1/v/t2/f2/m69/x.mp4?_nc_cat=1&efg=eyJ2ZW5jb2RlX3RhZyI6Ij&oh=00_A&oe=6A1&bitrate=123&tag=$tag"
+            assertEquals(codec == "h264", re.containsMatchIn(url), "tag=$tag is $codec")
+        }
+        // the tag may also come first or in the middle of the query
+        assertTrue(re.containsMatchIn("https://x/y.mp4?tag=hd"))
+        assertTrue(re.containsMatchIn("https://x/y.mp4?a=1&tag=hd&b=2"))
+        assertTrue(re.containsMatchIn("https://x/y.mp4?a=1&tag=dash_h264-basic-gen2_1080p&b=2"))
+    }
+
+    @Test fun anUnknownOrLookAlikeFacebookTagFallsBackToSdNeverToAnUnprovenHd() {
+        val re = hdTagRegex()
+        for (tag in listOf("sd", "sve_sd", "hdr", "hd_vp9", "HD", "dash_vp9-basic-gen2_720p", "dash_r2av1-r1gen2vp9_q20", "", "dash_h265")) {
+            assertFalse(re.containsMatchIn("https://x/y.mp4?a=1&tag=$tag"), "tag=$tag")
+        }
+        assertFalse(re.containsMatchIn("https://x/y.mp4?a=1&xtag=hd")) // another parameter that merely ends in "tag"
+        assertFalse(re.containsMatchIn("https://x/hd/tag=hd/y.mp4")) // not in the query
+        assertFalse(re.containsMatchIn("https://example.com/video.mp4")) // a site with no tag at all
     }
 
     @Test fun theMp4SizeCapIsTheShortSideNotTheHeight() {
@@ -51,8 +92,11 @@ class DownloadPresetsTest {
         assertEquals(DownloadPresets.mp4Args(1080), DownloadPresets.byId("best-1080").extraArgs)
     }
 
-    @Test fun anMp4PresetStaysAnMp4EvenWhenTheSiteHasNoH264() {
-        // VP9 + Opus would otherwise merge into .mkv; nothing is ever re-encoded or remuxed to get there.
+    @Test fun anMp4PresetMergesIntoAnMp4EvenWhenTheSiteHasNoH264() {
+        // A no-H.264 fallback that is a MERGE (VP9 video + Opus audio, which would otherwise be .mkv) comes out as .mp4. A
+        // single-file fallback in another container (a lone .webm on a rare host) keeps its own: --merge-output-format does not
+        // touch it, and --remux-video mp4 would make the whole download fail when the codecs cannot go into an mp4 (Vorbis),
+        // so it is deliberately absent. Nothing is ever re-encoded.
         for (id in listOf("best-1080", "best-720")) {
             val args = DownloadPresets.byId(id).extraArgs
             assertEquals("mp4", args[args.indexOf("--merge-output-format") + 1], id)
@@ -62,7 +106,8 @@ class DownloadPresetsTest {
     }
 
     @Test fun theMp4DescriptionsPromiseOnlyWhatThePresetsDo() {
-        // 1080 is an upper bound on the SHORT side (a 720p-only source stays 720p; Facebook's only H.264 is its 360p sd).
+        // 1080 is an upper bound on the SHORT side (a 720p-only source stays 720p; on a modern Facebook video the only H.264 is its
+        // small sd, while an older one's hd is H.264 720p).
         assertEquals("H.264 up to 1080p, widely compatible", DownloadPresets.byId("best-1080").desc)
         assertEquals("Smaller file, good quality", DownloadPresets.byId("best-720").desc)
     }
@@ -73,7 +118,7 @@ class DownloadPresetsTest {
         val p = DownloadPresets.byId("audio-mp3")
         assertEquals("bestaudio/best", p.format)
         assertEquals(listOf("-x", "--audio-format", "mp3", "--audio-quality", "320K"), p.extraArgs)
-        assertNotEquals("0", p.extraArgs.last()) // 0..9 select VBR (V0 is about 245 kbps); >= 10 means -b:a Nk
+        assertNotEquals("0", p.extraArgs.last()) // 0..10 select VBR (V0 is about 245 kbps); above 10 means -b:a Nk
         assertTrue(p.audioOnly)
     }
 
