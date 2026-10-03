@@ -9,7 +9,9 @@ import com.sieve.engine.repo.YtDlpEngine
 import com.sieve.engine.update.UpdateChannel
 import com.sieve.engine.update.UpdateCheck
 import com.sieve.engine.update.UpdateResult
+import com.sieve.queue.core.ArgReconciler
 import com.sieve.queue.core.JobSpec
+import com.sieve.queue.core.PreparedOutput
 import com.sieve.queue.core.QueueJob
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -166,10 +168,57 @@ class DownloadViewModelTest {
         }
     }
 
+    // ---- the whole command line of every preset: download screen -> YtdlpArgs.build -> the queue's ArgReconciler ----
+
+    /** What the queue starts yt-dlp with for a freshly queued row (QueueManager.withOutput): -c, the saved args, the work dir and template last. */
+    private fun spawnArgsFor(presetId: String, workTemplate: String = "%(title)s [%(id)s].%(ext)s"): List<String> =
+        ArgReconciler.injectDownloadOutput(ArgReconciler.ensureContinue(argsFor(presetId)), PreparedOutput("/work/id", workTemplate))
+
+    private val toggles = listOf("--embed-metadata", "--embed-thumbnail", "-N", "4")
+    private val spawnTail = listOf("-P", "/work/id", "-o", "%(title).150B [%(id)s].%(ext)s")
+    // The 1080p / 720p MP4 selectors: the best resolution within the short-side cap, H.264 only as a tie-break in the -S sort.
+    private val fbHdRule = "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*_720p)(&|\$)']"
+    private val mp4Format720 = "$fbHdRule/bv*+ba/b"
+    private val mp4Format1080 =
+        "bv*[width>720][width<=1080][height>1080]+ba/bv*[height>720][height<=1080][width>720]+ba/$fbHdRule/bv*+ba/b"
+    private fun mp4Sort(shortSide: Int) = "res:$shortSide,vcodec:h264,acodec:aac,proto,ext:mp4:m4a"
+
+    private val goldenSpawnArgs = mapOf(
+        "best-video" to listOf("-c", "-f", "bestvideo*+bestaudio/best") + toggles + spawnTail,
+        "best-1080" to listOf("-c", "-f", mp4Format1080, "-S", mp4Sort(1080), "--merge-output-format", "mp4") + toggles + spawnTail,
+        "best-720" to listOf("-c", "-f", mp4Format720, "-S", mp4Sort(720), "--merge-output-format", "mp4") + toggles + spawnTail,
+        "best-4k" to listOf("-c", "-f", "bestvideo[height<=2160]+bestaudio/best") + toggles + spawnTail,
+        "audio-best" to listOf("-c", "-f", "bestaudio/best", "-x") + toggles + spawnTail,
+        "audio-mp3" to listOf("-c", "-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "320K") + toggles + spawnTail,
+        "audio-opus" to listOf("-c", "-f", "bestaudio/best", "-x", "--audio-format", "opus", "--audio-quality", "128K") + toggles + spawnTail,
+        "archive" to listOf(
+            "-c", "-f", "bestvideo+bestaudio/best",
+            "--embed-subs", "--all-subs", "--embed-chapters", "--write-info-json", "--remux-video", "mkv",
+        ) + toggles + spawnTail,
+    )
+
+    @Test fun everyPresetsExactCommandLineIsLocked() {
+        assertEquals(DownloadPresets.ALL.map { it.id }.toSet(), goldenSpawnArgs.keys) // a new preset needs its golden line
+        for ((id, expected) in goldenSpawnArgs) {
+            // An unbounded %(title)s in the saved work template is clamped to 150 bytes at spawn (byteSafeTemplate); a clamped one stays.
+            assertEquals(expected, spawnArgsFor(id), id)
+            assertEquals(expected, spawnArgsFor(id, "%(title).150B [%(id)s].%(ext)s"), id)
+        }
+    }
+
+    @Test fun noPresetRepeatsAFlagThatWouldChangeItsMeaning() {
+        for (id in goldenSpawnArgs.keys) {
+            val args = spawnArgsFor(id)
+            for (flag in listOf("-f", "-x", "-S", "--audio-format", "--audio-quality", "--merge-output-format", "-P", "-o", "-c")) {
+                assertTrue(args.count { it == flag } <= 1, "$id repeats $flag")
+            }
+        }
+    }
+
     @Test fun anAudioPresetKeepsTheDesktopArgumentOrder() = assertEquals(
         listOf(
             "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
-            "-x", "--audio-format", "mp3", "--audio-quality", "0",
+            "-x", "--audio-format", "mp3", "--audio-quality", "320K",
             "--embed-metadata", "--embed-thumbnail", "-N", "4",
         ),
         argsFor("audio-mp3"),
@@ -424,14 +473,25 @@ class DownloadViewModelTest {
         assertEquals("MP3 320kbps", sink.single().format)
     }
 
-    @Test fun mp4PresetsAskForH264FirstAndKeepTheirFallbacks() {
-        // [ext=mp4] alone also matches AV1-in-MP4 (YouTube serves it first), which breaks the
-        // "H.264, widely compatible" promise; the old chain stays behind it as the fallback.
-        for ((id, h) in listOf("best-1080" to 1080, "best-720" to 720)) {
-            val alternatives = DownloadPresets.byId(id).format.split('/')
-            assertEquals("bestvideo[height<=$h][vcodec^=avc1]+bestaudio[ext=m4a]", alternatives.first())
-            assertEquals("best", alternatives.last())
-            assertTrue(alternatives.contains("bestvideo[height<=$h][ext=mp4]+bestaudio[ext=m4a]"))
+    @Test fun anMp4PresetCarriesItsSortAndMergeFlagsIntoTheJob() {
+        for ((id, limit) in listOf("best-1080" to 1080, "best-720" to 720)) {
+            assertEquals(
+                listOf(
+                    "-f", if (limit == 1080) mp4Format1080 else mp4Format720, "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+                    "-S", mp4Sort(limit), "--merge-output-format", "mp4",
+                    "--embed-metadata", "--embed-thumbnail", "-N", "4",
+                ),
+                argsFor(id), id,
+            )
         }
     }
+
+    @Test fun theOpusPresetReachesYtDlpAsAnEncodeToOpus() = assertEquals(
+        listOf(
+            "-f", "bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+            "-x", "--audio-format", "opus", "--audio-quality", "128K",
+            "--embed-metadata", "--embed-thumbnail", "-N", "4",
+        ),
+        argsFor("audio-opus"),
+    )
 }
