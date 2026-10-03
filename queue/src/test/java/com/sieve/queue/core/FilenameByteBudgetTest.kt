@@ -195,6 +195,16 @@ class FilenameByteBudgetTest {
         }
     }
 
+    @Test fun `an id of 40 bytes still fits every side file name - the bound the 150-byte budget assumes`() {
+        // The [id] is not cut: 150 + " [" + id + "]" + the longest side name (about 50 bytes) stays under 255 for ids up to about 50 bytes.
+        // A long id from the generic or direct-link extractor (the URL's file name) is not covered, as in 1.0.3.
+        val args = spawn()
+        for ((what, title) in worstCaseTitles) {
+            val name = YtdlpFilenameModel.render(args, title, id = "i".repeat(40))
+            assertTrue("$what: ${siblings(name).maxOf { bytes(it) }} B", siblings(name).all { bytes(it) <= 255 })
+        }
+    }
+
     @Test fun `a template without a title adds nothing`() {
         val args = spawn("%(id)s.%(ext)s")
         assertTrue("--parse-metadata" !in args)

@@ -71,9 +71,12 @@ object ArgReconciler {
      * ` [id]` and, while it works, `.f<format-id>.<ext>.part` (fragmented streams: `.part-Frag<n>.part`)
      * - so this leaves 105 bytes for all of that.
      *
-     * Not covered, as in 1.0.3 (see FilenameByteBudgetTest): a PLAYLIST's own title has no scratch copy (see
-     * [NAME_TITLE_REF]), so a playlist-level `.info.json` still cuts the raw title - one made almost entirely of
-     * `? | :` can still overflow. Single videos are exact.
+     * Two bounds this does NOT cover, both as in 1.0.3 (see FilenameByteBudgetTest):
+     *  - the `[id]` is uncut: the 105 bytes hold ids up to about 40 bytes next to the longest side file name
+     *    (about 85 for a plain `.part`), which covers the sites Sieve is tested on. Only the generic and direct-link
+     *    extractors derive a long id (the URL's file name);
+     *  - a PLAYLIST's own title has no scratch copy (see [NAME_TITLE_REF]), so a playlist-level `.info.json` still
+     *    cuts the raw title: one made almost entirely of `? | :` can still overflow. Single videos are exact.
      */
     const val TITLE_BUDGET_BYTES = 150
 
