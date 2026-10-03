@@ -188,6 +188,135 @@ class FfmpegRunnerStallTest {
         assertEquals(120_000L, FfmpegRunner.STALL_TIMEOUT_MS)
     }
 
+    // --- the first-progress bound of a hardware encode ---------------------------------------------------------------
+
+    @Test fun `the first-progress bound is twenty seconds, the runner's default, and shorter than the watchdog`() {
+        // Pinned on purpose: on the S26 healthy MediaCodec runs advance within about a second (a 19 s clip is saved in 0.7-0.8 s) and
+        // the hang cost two minutes. Raising it gives that back; lowering it needs the slowest healthy start re-measured.
+        assertEquals(20_000L, FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS)
+        assertEquals(FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS, FfmpegRunner.Limits().firstProgressTimeoutMs)
+        assertTrue(FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS < FfmpegRunner.STALL_TIMEOUT_MS)
+    }
+
+    @Test fun `a hardware run that prints no progress at all is stalled after the first-progress bound and retried on the CPU`() =
+        runTest(timeout = 30.seconds) {
+            val hung = HungProcess()
+            val ok = ScriptedProcess(stdout = flowOf2(progress(9_000_000)), exitAfterMs = 10)
+            val fac = QueueFactory(listOf(hung, ok))
+            val events = async { FfmpegRunner(fac, "/x").run(hwJob()).toList() }
+
+            advanceTimeBy(FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS - 1_000)
+            runCurrent()
+            assertEquals("not stopped before the bound", 1, fac.calls.size)
+            assertEquals(0, hung.destroyForciblyCount)
+            assertTrue(hung.stdinWrites.isEmpty())
+
+            advanceTimeBy(5_000) // the bound, then q (0.5 s) -> SIGTERM (0.5 s) -> SIGKILL, then the CPU run
+            runCurrent()
+            assertTrue("done long before the two-minute watchdog would even have fired (at ${currentTime} ms)", events.isCompleted)
+            val ev = events.await()
+            assertEquals(2, fac.calls.size)
+            assertEquals(listOf("q"), hung.stdinWrites)
+            assertEquals(1, hung.destroyCount)
+            assertEquals(1, hung.destroyForciblyCount)
+            assertTrue(fac.calls[0].contains("h264_mediacodec"))
+            assertTrue(fac.calls[1].contains("libx264") && !fac.calls[1].contains("h264_mediacodec"))
+            assertEquals(0, done(ev).exitCode)
+            assertEquals(
+                listOf("Hardware codec stopped making progress, retrying on software encoder"),
+                ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+            )
+        }
+
+    @Test fun `a hardware run that advanced and then stalls keeps the two-minute bound`() = runTest(timeout = 30.seconds) {
+        // The first block comes at 1.5 s, far inside the first-progress bound; the silence after it is a mid-run stall.
+        val hung = HungProcess(stdout = flow { delay(1_500); emit(progress(1_000_000)); awaitCancellation() })
+        val ok = ScriptedProcess(stdout = flowOf2(progress(9_000_000)), exitAfterMs = 10)
+        val fac = QueueFactory(listOf(hung, ok))
+        val events = async { FfmpegRunner(fac, "/x").run(hwJob()).toList() }
+
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS) // 118 s of silence since the block: the ordinary bound is not up
+        runCurrent()
+        assertEquals("a mid-run stall is not held to the first-progress bound", 1, fac.calls.size)
+        assertEquals(0, hung.destroyForciblyCount)
+
+        advanceTimeBy(10_000)
+        runCurrent()
+        assertTrue(events.isCompleted)
+        val ev = events.await()
+        assertEquals(2, fac.calls.size)
+        assertEquals(1, hung.destroyForciblyCount)
+        assertEquals(0, done(ev).exitCode)
+        assertEquals("Hardware codec stopped making progress, retrying on software encoder", ev.filterIsInstance<TranscodeEvent.Log>().single().line)
+    }
+
+    @Test fun `a CPU run with no progress for longer than the first-progress bound is not stalled early`() = runTest(timeout = 30.seconds) {
+        val p = HungProcess()
+        val events = async { runner(p).run(cpuJob()).toList() }
+        advanceTimeBy(3 * FfmpegRunner.FIRST_PROGRESS_TIMEOUT_MS)
+        runCurrent()
+        assertFalse("a software encode may take tens of seconds to its first packet", events.isCompleted)
+        assertEquals(0, p.destroyForciblyCount)
+        assertTrue(p.stdinWrites.isEmpty())
+
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS) // only the ordinary bound ends it
+        runCurrent()
+        assertTrue(events.isCompleted)
+        assertEquals(FfmpegRunner.EXIT_STALLED, done(events.await()).exitCode)
+    }
+
+    @Test fun `a CPU encode that takes 45 s to its first progress is left alone`() = runTest(timeout = 30.seconds) {
+        // A 4K software encode on a phone: tens of seconds of look-ahead before the first packet.
+        val blocks = flow { delay(45_000); emit(progress(1_000_000)); delay(1_000); emit(progress(2_000_000)) }
+        val p = ScriptedProcess(stdout = blocks, exitAfterMs = 50_000)
+        val ev = runner(p).run(cpuJob()).toList()
+        assertEquals(0, done(ev).exitCode)
+        assertEquals(0, p.destroyForciblyCount)
+        assertEquals(2, ev.count { it is TranscodeEvent.Progress })
+    }
+
+    @Test fun `a hardware decoder behind a CPU encoder keeps the two-minute bound before its first progress`() = runTest(timeout = 30.seconds) {
+        // Only the ENCODER being hardware promises a first frame within seconds; the CPU encoder behind a MediaCodec decoder may not.
+        val fac = QueueFactory(listOf(HungProcess(), ScriptedProcess(exitCode = 0)))
+        val job = cpuJob(inputArgs = listOf("-c:v", "hevc_mediacodec"))
+        val events = async { FfmpegRunner(fac, "/x").run(job).toList() }
+        advanceTimeBy(FfmpegRunner.STALL_TIMEOUT_MS - 1_000)
+        runCurrent()
+        assertEquals("not stopped at ${currentTime} ms", 1, fac.calls.size)
+
+        advanceTimeBy(10_000) // the ordinary bound still ends it, and the decoder is retried in software
+        runCurrent()
+        assertTrue(events.isCompleted)
+        assertEquals(2, fac.calls.size)
+        assertEquals(0, done(events.await()).exitCode)
+    }
+
+    @Test fun `a hardware run that seeks with -ss keeps the two-minute bound before its first progress`() = runTest(timeout = 30.seconds) {
+        // FfmpegArgs puts -ss after -i: ffmpeg decodes and drops everything before it, and nothing advances meanwhile.
+        val seeking = hwJob().copy(presetArgs = listOf("-ss", "300", "-c:v", "h264_mediacodec", "-b:v", "3928k"))
+        val slowStart = ScriptedProcess(stdout = flow { delay(60_000); emit(progress(1_000_000)) }, exitAfterMs = 65_000)
+        val fac = QueueFactory(listOf(slowStart))
+        val ev = FfmpegRunner(fac, "/x").run(seeking).toList()
+        assertEquals("no retry", 1, fac.calls.size)
+        assertEquals(0, slowStart.destroyForciblyCount)
+        assertEquals(0, done(ev).exitCode)
+        assertEquals(1, ev.count { it is TranscodeEvent.Progress })
+    }
+
+    @Test fun `the CPU retry after a first-progress stall is not held to the short bound`() = runTest(timeout = 30.seconds) {
+        // The AV1 decoder stays on the retry (this ffmpeg has no software AV1 decoder), so the retry still involves hardware; its CPU
+        // encoder may need tens of seconds to its first packet, and a second stall would fail the job for good.
+        val hung = HungProcess()
+        val slowRetry = ScriptedProcess(stdout = flow { delay(45_000); emit(progress(1_000_000)) }, exitAfterMs = 50_000)
+        val fac = QueueFactory(listOf(hung, slowRetry))
+        val ev = FfmpegRunner(fac, "/x").run(hwJob()).toList()
+        assertEquals(2, fac.calls.size)
+        assertEquals("av1_mediacodec", fac.calls[1][fac.calls[1].indexOf("-c:v") + 1])
+        assertEquals(0, slowRetry.destroyForciblyCount)
+        assertEquals(0, done(ev).exitCode)
+        assertEquals(1, ev.filterIsInstance<TranscodeEvent.Log>().size)
+    }
+
     // --- hardware fallback ------------------------------------------------------------------------------------------
 
     @Test fun `a stalled hardware run falls back to the CPU encoder, once, and finishes there`() = runTest(timeout = 30.seconds) {

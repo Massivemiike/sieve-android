@@ -137,6 +137,10 @@ escalation `q, SIGTERM, "SIGKILL"` was really `q, SIGTERM, SIGTERM`, which a wed
 * `AndroidFfmpegProcess.destroyForcibly()` is a real SIGKILL (`android.os.Process.sendSignal` on the pid read from `Process.toString()`, logged), `awaitExit` declares a child that
   survives SIGKILL gone after 3 s, stdin writes and `destroy()` are bounded and abandonable, lines are read with a length bound (`BoundedLineReader`, 8192 chars).
 * `FfmpegRunner`: a stall watchdog (no `-progress` advance for `STALL_TIMEOUT_MS` = 120 s; counted in 1 s ticks so an OS freeze does not count) stops the process (`q`, SIGTERM, SIGKILL);
+  a hardware **encode** run that has not advanced at all 20 s after its spawn (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs advance within about a second, the signed 1.0.4 test saw four of
+  five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s) is stalled too, so a hang before the first frame costs about 20 s, not two minutes; the short bound is for the first advance only
+  (after it a mid-run stall keeps the 120 s), and never applies to CPU runs, to a hardware decoder behind a CPU encoder, to the CPU retry, or to a run that seeks with `-ss` (ffmpeg decodes and drops the
+  skipped part first);
   a stalled or crashed (SIGABRT, SIGSEGV, ...) hardware run is retried **once** on the CPU path, a stalled CPU run ends `Done(124, "ffmpeg stopped making progress")`; a run the caller asked
   to stop is never retried; the readers are detached and abandoned after 2 s so a blocked `read(2)` cannot hold the queue slot; `StderrLog` collapses repeated lines, paces the rest
   (300 burst, 50/s) and keeps the 64 KB / 30-line tails; events leave through a 256-slot `DROP_OLDEST` buffer.
@@ -184,7 +188,7 @@ Nothing here could run: this work had no device, emulator or adb.
    proxy. Expect the OS behaviour: the connection times out and Sieve retries the row as a flaky network, with no Sieve prompt. That is correct there: below API 37 the prompt, guard and error text are inert.
 6. Room 2.6.1 to 2.8.5: open an existing v1 database (upgrade over 1.0.3 or earlier), run the androidTest suites (they are only compiled in this work).
 7. **The transcode hang fix:** a hardware (MediaCodec) transcode of a 4K AV1 clip, repeated until one hangs (about one in three on the S26 before the fix): ONE Cancel tap ends the row at once;
-   a hang left alone ends within about two minutes with a CPU retry once, and a hang on the CPU retry ends FAILED with "ffmpeg stopped making progress". Then a normal long transcode (an hour of
+   a hang before the first frame ends after about 20 s with a CPU retry once (one that hangs after progress began, within about two minutes), and a hang on the CPU retry ends FAILED with "ffmpeg stopped making progress". Then a normal long transcode (an hour of
    video, faststart rewrite) must NOT be cut by the 120 s watchdog. `adb logcat -s SieveTx` shows the SIGKILL line.
 
 **On an Android 17 emulator (`system-images;android-37.0;google_apis;x86_64`, debug build) or device**

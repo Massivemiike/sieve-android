@@ -89,9 +89,10 @@ private class WedgedFactory(private val deathCode: Int = 137) : FfmpegProcessFac
  * while `runTest` owns the clock: whenever the test body is suspended, the virtual clock runs ahead, and the runner's stall watchdog
  * (a virtual-time tick, 120 s of them) can expire before the real thread has answered, which then stops a perfectly healthy fake
  * process. That showed as two sporadic failures under load ("expected 0 but was 1": a `q` nobody asked for; the HW retry logged
- * "stopped making progress" instead of "crashed"). Nothing here is about the watchdog (FfmpegRunnerStallTest owns it), so it is off.
+ * "stopped making progress" instead of "crashed"). Nothing here is about the watchdog (FfmpegRunnerStallTest owns it), so it is off:
+ * both the two-minute bound and the 20 s first-progress bound of a hardware run (the fake hardware jobs below never print progress).
  */
-internal val NO_STALL = FfmpegRunner.Limits(stallTimeoutMs = Long.MAX_VALUE / 4)
+internal val NO_STALL = FfmpegRunner.Limits(stallTimeoutMs = Long.MAX_VALUE / 4, firstProgressTimeoutMs = Long.MAX_VALUE / 4)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RealTranscodePortTest {
@@ -204,6 +205,32 @@ class RealTranscodePortTest {
         val ev = events.await()
         assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
         assertTrue(ev.filterIsInstance<TranscodeEvent.Log>().single().line.startsWith("Hardware codec crashed, retrying"))
+    }
+
+    // The owner's phone (1.0.4 RC): a hardware transcode whose codec service died before the first frame. Real time and event waits, no runTest:
+    // the wedged fake never answers, so there is no clock to race against, and the bounds are shrunk to tens of milliseconds.
+    @Test fun `a hardware run that never prints progress is stopped by the first-progress bound and retried on the CPU`() = runBlocking {
+        val factory = WedgedFactory()
+        val quick = FfmpegRunner.Limits(
+            firstProgressTimeoutMs = 150, stallCheckMs = 10, stallQuitGraceMs = 10, stallTermGraceMs = 10, reapWaitMs = 1_000, readerDrainMs = 500,
+        )
+        val p = RealTranscodePort("/lib/libsieveffmpeg.so", factory, quick) { null }
+        val hw = TranscodeJob("/a", "/work/out.mp4", listOf("-c:v", "h264_mediacodec", "-b:v", "3928k"), 19.0, true)
+        val events = async(Dispatchers.Default) { p.run("A", hw).toList() }
+        withTimeout(10_000) { while (factory.procs.size < 2) delay(10) } // the first run was stopped, the CPU run started
+
+        val first = factory.procs[0]
+        assertEquals(listOf("q"), first.stdinWrites)
+        assertEquals(1, first.destroyed)
+        assertEquals(1, first.killed)
+        factory.procs[1].exit.complete(0)
+
+        val ev = withTimeout(10_000) { events.await() }
+        assertEquals(0, (ev.last() as TranscodeEvent.Done).exitCode)
+        assertEquals(
+            listOf("Hardware codec stopped making progress, retrying on software encoder"),
+            ev.filterIsInstance<TranscodeEvent.Log>().map { it.line },
+        )
     }
 
     @Test fun `cancel on a process whose stdin is already closed does not throw`() = runTest(timeout = 20.seconds) {

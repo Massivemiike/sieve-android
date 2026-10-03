@@ -33,6 +33,11 @@ import java.util.concurrent.atomic.AtomicReference
  *    `frame=0 out_time=N/A` blocks and floods the log. Time is counted in watchdog ticks, so a stretch in which the
  *    whole app was frozen by the OS is not counted either. A stalled hardware run falls back (below); a stalled CPU
  *    run ends [TranscodeEvent.Done] with [EXIT_STALLED] and [STALL_SUMMARY].
+ *    A hardware ENCODE run gets a shorter bound for its FIRST advance only: none at all within
+ *    [Limits.firstProgressTimeoutMs] ([FIRST_PROGRESS_TIMEOUT_MS]) of the spawn is a stall too, because MediaCodec runs that
+ *    work advance within a second or two and a codec service that died under ffmpeg before its first frame would
+ *    otherwise cost the whole [STALL_TIMEOUT_MS] before the CPU fallback. From the first advance on the ordinary bound
+ *    applies again, and CPU runs (and the retry, which is one) never get the short bound ([expectsPromptFirstProgress]).
  *  - *The pipes.* The readers are NOT children of the run: after the process is gone they get [Limits.readerDrainMs] to
  *    finish and are then abandoned (a blocking `read(2)` cannot be cancelled), so a pipe that never reaches EOF cannot hold
  *    the run, the queue slot or the foreground service.
@@ -60,6 +65,7 @@ class FfmpegRunner(
     /** Every bound the runner works to; the defaults are the named constants below, tests shrink them. */
     data class Limits(
         val stallTimeoutMs: Long = STALL_TIMEOUT_MS,
+        val firstProgressTimeoutMs: Long = FIRST_PROGRESS_TIMEOUT_MS,
         val stallCheckMs: Long = STALL_CHECK_MS,
         val stallQuitGraceMs: Long = STALL_QUIT_GRACE_MS,
         val stallTermGraceMs: Long = STALL_TERM_GRACE_MS,
@@ -150,7 +156,7 @@ class FfmpegRunner(
             }
             val exit = readers.async { process.awaitExit() }
 
-            val (code, stalled) = awaitExitOrStall(process, exit, watch)
+            val (code, stalled) = awaitExitOrStall(process, exit, watch, expectsPromptFirstProgress(job))
 
             // Bounded: the process is gone, so the pipes normally hit EOF at once. A read that does not return is abandoned.
             withTimeoutOrNull(limits.readerDrainMs) {
@@ -179,8 +185,16 @@ class FfmpegRunner(
         }
     }
 
-    /** The exit code, and whether the watchdog had to stop the process to get it. */
-    private suspend fun awaitExitOrStall(process: FfmpegProcess, exit: Deferred<Int>, watch: ProgressWatch): Pair<Int, Boolean> {
+    /**
+     * The exit code, and whether the watchdog had to stop the process to get it. A [promptFirstProgress] run is held to
+     * [Limits.firstProgressTimeoutMs] until its first advance; every other stretch of quiet is held to [Limits.stallTimeoutMs].
+     */
+    private suspend fun awaitExitOrStall(
+        process: FfmpegProcess,
+        exit: Deferred<Int>,
+        watch: ProgressWatch,
+        promptFirstProgress: Boolean,
+    ): Pair<Int, Boolean> {
         var quietMs = 0L
         var seen = watch.version
         while (true) {
@@ -194,7 +208,8 @@ class FfmpegRunner(
             } else {
                 quietMs += limits.stallCheckMs
             }
-            if (quietMs >= limits.stallTimeoutMs) {
+            val bound = if (promptFirstProgress && !watch.advanced) minOf(limits.firstProgressTimeoutMs, limits.stallTimeoutMs) else limits.stallTimeoutMs
+            if (quietMs >= bound) {
                 cancel(process, limits.stallQuitGraceMs, limits.stallTermGraceMs)
                 return (withTimeoutOrNull(limits.reapWaitMs) { exit.await() } ?: EXIT_STALLED) to true
             }
@@ -243,6 +258,17 @@ class FfmpegRunner(
          */
         const val STALL_TIMEOUT_MS = 120_000L
 
+        /**
+         * A hardware ENCODE run ([expectsPromptFirstProgress]) that has not advanced AT ALL this long after its spawn is
+         * stalled, so the CPU fallback starts after about 20 s instead of [STALL_TIMEOUT_MS]. Measured on the S26 (signed
+         * 1.0.4, five H.264 720p MediaCodec runs of a 19 s clip): four took 0.7-0.8 s from start to saved file, so their first
+         * `-progress` block came in well under a second; the fifth hung in the Qualcomm codec service, printed nothing that
+         * advanced, and the 120 s watchdog killed it 121 s after its start. 20 s is more than 20x the healthy figure (slow
+         * storage, a cold codec service and a busy phone included) and about a sixth of what the hang cost. It is NOT a bound
+         * for software encodes: those can take tens of seconds before their first packet (see [STALL_TIMEOUT_MS]).
+         */
+        const val FIRST_PROGRESS_TIMEOUT_MS = 20_000L
+
         /** The watchdog's tick. */
         const val STALL_CHECK_MS = 1_000L
 
@@ -282,6 +308,16 @@ class FfmpegRunner(
         /** Hardware in the run: the encoder, or a MediaCodec decoder forced onto the input. */
         internal fun involvesHardware(job: TranscodeJob): Boolean =
             job.usedHardwareEncoder || hardwareDecoderIndices(job.inputArgs).isNotEmpty()
+
+        /**
+         * Whether [FIRST_PROGRESS_TIMEOUT_MS] applies to [job]: the ENCODER is hardware, so the first frames come out within
+         * seconds. Not when only the decoder is (the CPU encoder behind it can need tens of seconds for its first packet, which
+         * is what [STALL_TIMEOUT_MS] is sized for), and not for the retry, whose encoder was demoted to software. Not when the
+         * job seeks with `-ss` either: `FfmpegArgs` places it after `-i`, where ffmpeg decodes and drops everything before it,
+         * so nothing advances for as long as that takes (minutes, for a deep seek into a long file).
+         */
+        internal fun expectsPromptFirstProgress(job: TranscodeJob): Boolean =
+            job.usedHardwareEncoder && "-ss" !in job.presetArgs && "-ss" !in job.inputArgs
 
         /** Positions of `-c:v <x>_mediacodec` pairs in [inputArgs]. */
         private fun hardwareDecoderIndices(inputArgs: List<String>): List<Int> =
@@ -333,6 +369,9 @@ internal class ProgressWatch {
 
     /** Changes whenever the progress advanced. */
     val version: Long get() = moves.get()
+
+    /** Whether it has advanced at all since the run began. */
+    val advanced: Boolean get() = moves.get() > 0
 
     fun observe(p: FfmpegProgress) {
         var moved = p.isEnd

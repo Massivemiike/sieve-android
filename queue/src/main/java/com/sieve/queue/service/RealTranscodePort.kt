@@ -27,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap
 class RealTranscodePort internal constructor(
     private val binaryPath: String,
     private val delegate: FfmpegProcessFactory,
-    /** The runner's bounds (stall watchdog, grace periods). Production always uses the defaults; tests that run a fake process under a virtual clock widen the stall bound, see below. */
+    /** The runner's bounds (stall watchdog, first-progress bound, grace periods). Production always uses the defaults; tests that run a fake process under a virtual clock widen the stall bounds, see below. */
     private val limits: FfmpegRunner.Limits,
     private val probe: (String) -> SourceVideoInfo?,
 ) : TranscodePort {
