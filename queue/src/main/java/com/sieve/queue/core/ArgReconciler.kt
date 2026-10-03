@@ -51,14 +51,29 @@ object ArgReconciler {
 
     /**
      * yt-dlp scratch field the file name is cut from: the title after yt-dlp's OWN filename sanitizer
-     * (`%(title)S`). Not `title` itself, so the embedded tags and the info JSON keep the real title.
+     * (`%(title)S`). Not `title` itself, so the embedded tags and the info JSON keep the real title. The `__`
+     * prefix makes it a PRIVATE field: yt-dlp drops every `__` key when it writes an `.info.json`, so the scratch
+     * copy never lands in the user's archive as a foreign key (a plain `sieve_title` did).
      */
-    const val NAME_TITLE_FIELD = "sieve_title"
+    const val NAME_TITLE_FIELD = "__sieve_title"
+
+    /**
+     * What the name template cuts: `a,b` is yt-dlp's alternative - [NAME_TITLE_FIELD] when set, the real `title`
+     * otherwise. The fallback is load-bearing: `--parse-metadata` only runs on VIDEOS, but yt-dlp names the
+     * playlist-level files (`--write-info-json` on a playlist or channel URL, as the Archive preset does, also writes
+     * `<playlist title> [<playlist id>].info.json`) from this same `-o`, evaluated on the PLAYLIST - which has no
+     * scratch field. Without the fallback that file would be saved as `NA [<playlist id>].info.json`.
+     */
+    private const val NAME_TITLE_REF = "$NAME_TITLE_FIELD,title"
 
     /**
      * UTF-8 bytes of title kept in a file name. ext4 caps a name at 255 bytes, and yt-dlp appends
      * ` [id]` and, while it works, `.f<format-id>.<ext>.part` (fragmented streams: `.part-Frag<n>.part`)
      * - so this leaves 105 bytes for all of that.
+     *
+     * Not covered, as in 1.0.3 (see FilenameByteBudgetTest): a PLAYLIST's own title has no scratch copy (see
+     * [NAME_TITLE_REF]), so a playlist-level `.info.json` still cuts the raw title - one made almost entirely of
+     * `? | :` can still overflow. Single videos are exact.
      */
     const val TITLE_BUDGET_BYTES = 150
 
@@ -77,16 +92,15 @@ object ArgReconciler {
      * exact, and the look-alikes stay exactly yt-dlp's own, as on Windows. Needs [titleCopyArgsFor].
      */
     fun byteSafeTemplate(template: String): String =
-        template.replace(UNSAFE_TITLE, "%($NAME_TITLE_FIELD).${TITLE_BUDGET_BYTES}B")
+        template.replace(UNSAFE_TITLE, "%($NAME_TITLE_REF).${TITLE_BUDGET_BYTES}B")
 
     /**
-     * `--parse-metadata %(title)S:%(sieve_title)s` when [template] reads that field; nothing otherwise. The target
-     * is spelled `%(field)s`: the yt-dlp inside the APK (2025.11.12) reads a bare `sieve_title` as a literal regex
-     * and sets nothing, so every file would be `NA [id]`. The log gains one `[MetadataParser] Parsed ...` line per
-     * video, and the info JSON one extra `sieve_title` key.
+     * `--parse-metadata %(title)S:%(__sieve_title)s` when [template] reads that field; nothing otherwise. The target
+     * is spelled `%(field)s`: the yt-dlp inside the APK (2025.11.12) reads a bare `__sieve_title` as a literal regex
+     * and sets nothing. The log gains one `[MetadataParser] Parsed ...` line per video.
      */
     private fun titleCopyArgsFor(template: String): List<String> =
-        if (template.contains("%($NAME_TITLE_FIELD)")) listOf(PARSE_METADATA, TITLE_COPY_ACTION) else emptyList()
+        if (template.contains("%($NAME_TITLE_FIELD")) listOf(PARSE_METADATA, TITLE_COPY_ACTION) else emptyList()
 
     private fun stripExactPair(args: List<String>, flag: String, value: String): List<String> {
         val out = ArrayList<String>(args.size)

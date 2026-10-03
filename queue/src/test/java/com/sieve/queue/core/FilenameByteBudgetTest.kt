@@ -128,7 +128,7 @@ class FilenameByteBudgetTest {
         assertEquals(1, args.count { it == "-o" })
         assertEquals(1, args.count { it == "-P" })
         assertEquals("/work/job-a", args[args.indexOf("-P") + 1])
-        assertEquals(listOf("%(title)S:%(sieve_title)s"), args.filterIndexed { i, _ -> i > 0 && args[i - 1] == "--parse-metadata" })
+        assertEquals(listOf("%(title)S:%(__sieve_title)s"), args.filterIndexed { i, _ -> i > 0 && args[i - 1] == "--parse-metadata" })
         assertTrue("--embed-metadata" in args)
         val name = YtdlpFilenameModel.render(args, "?".repeat(450))
         assertTrue(siblings(name).all { bytes(it) <= 255 })
@@ -147,8 +147,45 @@ class FilenameByteBudgetTest {
     @Test fun `the title copy spells its target as a field - a bare word sets nothing on the engine inside the APK`() {
         val args = spawn()
         val action = args[args.indexOf("--parse-metadata") + 1]
-        // yt-dlp 2025.11.12 reads a bare `sieve_title` as a literal regex: nothing is set and every file would be `NA [id]`
-        assertEquals("%(title)S:%(sieve_title)s", action)
+        // yt-dlp 2025.11.12 reads a bare `__sieve_title` as a literal regex: nothing is set and every file would be `NA [id]`
+        assertEquals("%(title)S:%(__sieve_title)s", action)
+    }
+
+    @Test fun `the scratch field is private - yt-dlp keeps a __ key out of the saved info json`() {
+        // Real engines (desktop 2026.08.19, APK 2025.11.12): with a plain `sieve_title` the user's .info.json gained a foreign
+        // top-level "sieve_title" key; yt-dlp drops every `__` key when it writes the JSON, and the file names are identical.
+        assertTrue(ArgReconciler.NAME_TITLE_FIELD.startsWith("__"))
+        val args = spawn()
+        assertEquals("%(title)S:%(${ArgReconciler.NAME_TITLE_FIELD})s", args[args.indexOf("--parse-metadata") + 1])
+        assertTrue(args.none { "%(sieve_title" in it })
+    }
+
+    @Test fun `a playlist-level file keeps its name - the scratch title exists only on videos`() {
+        val args = spawn()
+        for (v in PLAYLIST_VECTORS) {
+            assertEquals(v.key, v.legacy, YtdlpFilenameModel.renderPlaylistInfoJson(legacyArgs, v.title, v.id))
+            assertEquals(v.key, v.fixed, YtdlpFilenameModel.renderPlaylistInfoJson(args, v.title, v.id))
+            assertEquals("${v.key}: the playlist file must be named as it was before the fix", v.legacy, v.fixed)
+        }
+    }
+
+    @Test fun `without the title alternative every playlist file would be saved as NA - the first version of the fix`() {
+        // Real engines: `%(sieve_title).150B` on a playlist run saved "NA [PLtest123].info.json" (Archive preset + any playlist URL).
+        val noFallback = listOf("--parse-metadata", "%(title)S:%(__sieve_title)s", "-o", "%(__sieve_title).150B [%(id)s].%(ext)s")
+        assertEquals(
+            "NA [PLtest123].info.json",
+            YtdlpFilenameModel.renderPlaylistInfoJson(noFallback, "My Archive: Best? | Of 2026", "PLtest123"),
+        )
+    }
+
+    @Test fun `known residual - a playlist title of 150 bytes of question marks still overflows its own info json`() {
+        // As in 1.0.3: the playlist dict has no scratch copy, so its .info.json cuts the RAW title (see ArgReconciler.TITLE_BUDGET_BYTES).
+        // A video with the same title is exact.
+        val v = PLAYLIST_VECTORS.single { it.key == "pl-overlong" }
+        val playlistFile = YtdlpFilenameModel.renderPlaylistInfoJson(spawn(), v.title, v.id)
+        assertEquals(v.fixed, playlistFile)
+        assertTrue("${bytes(playlistFile)} B", bytes(playlistFile) > 255)
+        assertTrue(siblings(YtdlpFilenameModel.render(spawn(), v.title)).all { bytes(it) <= 255 })
     }
 
     @Test fun `a template without a title adds nothing`() {

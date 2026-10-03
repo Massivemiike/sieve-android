@@ -5,7 +5,7 @@ package com.sieve.queue.core
  * self-updates to); the 2025.11.12 inside the APK gives the same names. Captured with
  * `yt-dlp --load-info-json <id=dQw4w9WgXcQ, ext=mp4, title=...> --simulate --print filename` and these two arg sets:
  *  - legacy: `-o "%(title).150B [%(id)s].%(ext)s"`
- *  - fixed:  `--parse-metadata "%(title)S:%(sieve_title)s" -o "%(sieve_title).150B [%(id)s].%(ext)s"`
+ *  - fixed:  `--parse-metadata "%(title)S:%(__sieve_title)s" -o "%(__sieve_title,title).150B [%(id)s].%(ext)s"`
  * [YtdlpFilenameModel] must reproduce every one of them, and the spawn args the queue really builds are
  * rendered through that model, so a drift between the model and yt-dlp, or between the args and the fix,
  * fails a test. Re-capture when the engine's `sanitize_filename` changes.
@@ -120,5 +120,50 @@ internal val FILENAME_VECTORS: List<FilenameVector> = listOf(
         title = "\n",
         legacy = "_ [dQw4w9WgXcQ].mp4",
         fixed = "_ [dQw4w9WgXcQ].mp4",
+    ),
+)
+
+/**
+ * The PLAYLIST-level file: yt-dlp names `<playlist title> [<playlist id>].info.json` (`--write-info-json` on a
+ * playlist or channel URL, as the Archive preset does) from the same `-o`, evaluated on the playlist - where
+ * `--parse-metadata` never ran, so the scratch title does not exist. Captured from a real playlist run
+ * (`--load-info-json <playlist with one entry> --no-clean-info-json --skip-download --write-info-json`, then the
+ * directory listing) on the desktop 2026.08.19 and the APK's 2025.11.12, same names; `pl-overlong` could not be
+ * written (a 472-byte name), so it is `YoutubeDL.prepare_filename(playlist, 'pl_infojson')` on both.
+ * The scratch title would make every one of these `NA [<id>].info.json`; the `%(__sieve_title,title)` alternative
+ * keeps them exactly as before.
+ */
+internal data class PlaylistVector(val key: String, val id: String, val title: String, val legacy: String, val fixed: String)
+
+internal val PLAYLIST_VECTORS: List<PlaylistVector> = listOf(
+    PlaylistVector(
+        "pl-plain", id = "PLabc123",
+        title = "Best Of 2026 - Part 1",
+        legacy = "Best Of 2026 - Part 1 [PLabc123].info.json",
+        fixed = "Best Of 2026 - Part 1 [PLabc123].info.json",
+    ),
+    PlaylistVector(
+        "pl-archive", id = "PLtest123",
+        title = "My Archive: Best? | Of 2026",
+        legacy = "My Archive\uff1a Best\uff1f \uff5c Of 2026 [PLtest123].info.json",
+        fixed = "My Archive\uff1a Best\uff1f \uff5c Of 2026 [PLtest123].info.json",
+    ),
+    PlaylistVector(
+        "pl-long-plain", id = "PLtest123",
+        title = "p".repeat(160) + " end",
+        legacy = "p".repeat(150) + " [PLtest123].info.json",
+        fixed = "p".repeat(150) + " [PLtest123].info.json",
+    ),
+    PlaylistVector(
+        "pl-specials-60", id = "PLtest123",
+        title = "?".repeat(60),
+        legacy = "\uff1f".repeat(60) + " [PLtest123].info.json",
+        fixed = "\uff1f".repeat(60) + " [PLtest123].info.json",
+    ),
+    PlaylistVector(
+        "pl-overlong", id = "PLtest123",
+        title = "?".repeat(200),
+        legacy = "\uff1f".repeat(150) + " [PLtest123].info.json",
+        fixed = "\uff1f".repeat(150) + " [PLtest123].info.json",
     ),
 )

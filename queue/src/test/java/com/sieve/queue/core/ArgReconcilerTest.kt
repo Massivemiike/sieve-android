@@ -45,8 +45,8 @@ class ArgReconcilerTest {
         )
         assertEquals(
             listOf(
-                "-f", "best", "-P", "/work/job-a", "-o", "%(sieve_title).150B [%(id)s].%(ext)s",
-                "--parse-metadata", "%(title)S:%(sieve_title)s",
+                "-f", "best", "-P", "/work/job-a", "-o", "%(__sieve_title,title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(__sieve_title)s",
             ),
             out,
         )
@@ -62,8 +62,8 @@ class ArgReconcilerTest {
             listOf(
                 "--newline", "-c", "--no-warnings",
                 "-f", "bestvideo*+bestaudio/best", "--embed-metadata",
-                "-P", "/work/job-a", "-o", "%(sieve_title).150B [%(id)s].%(ext)s",
-                "--parse-metadata", "%(title)S:%(sieve_title)s",
+                "-P", "/work/job-a", "-o", "%(__sieve_title,title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(__sieve_title)s",
             ),
             out,
         )
@@ -87,11 +87,17 @@ class ArgReconcilerTest {
     }
 
     @Test fun `byteSafeTemplate cuts the sanitized title copy and leaves other templates alone`() {
-        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
-        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
-        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(sieve_title).150B [%(id)s].%(ext)s"))
+        val cut = "%(__sieve_title,title).150B [%(id)s].%(ext)s"
+        assertEquals(cut, ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
+        assertEquals(cut, ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+        assertEquals(cut, ArgReconciler.byteSafeTemplate(cut)) // idempotent
         assertEquals("%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(id)s.%(ext)s"))
         assertEquals("%(playlist_title)s/%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(playlist_title)s/%(id)s.%(ext)s"))
+    }
+
+    @Test fun `byteSafeTemplate falls back to the real title - a playlist has no scratch field`() {
+        // `%(a,b)s` is yt-dlp's alternative. Without ",title" the playlist-level info JSON is named "NA [<playlist id>].info.json".
+        assertEquals("%(__sieve_title,title).150B", ArgReconciler.byteSafeTemplate("%(title).150B"))
     }
 
     @Test fun `buildSpawnArgs prepends invariant flags and injects output`() {
