@@ -188,6 +188,13 @@ class FilenameByteBudgetTest {
         assertTrue(siblings(YtdlpFilenameModel.render(spawn(), v.title)).all { bytes(it) <= 255 })
     }
 
+    @Test fun `a cut a row already carries is kept when tighter than 150 and clamped to 150 when looser`() {
+        for (v in TEMPLATE_VECTORS) {
+            assertEquals(v.key, v.legacy, YtdlpFilenameModel.render(listOf("-o", v.persisted), v.title))
+            assertEquals(v.key, v.fixed, YtdlpFilenameModel.render(spawn(v.persisted), v.title))
+        }
+    }
+
     @Test fun `a template without a title adds nothing`() {
         val args = spawn("%(id)s.%(ext)s")
         assertTrue("--parse-metadata" !in args)

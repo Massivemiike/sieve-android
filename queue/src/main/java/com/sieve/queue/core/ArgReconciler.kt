@@ -80,8 +80,8 @@ object ArgReconciler {
     private const val PARSE_METADATA = "--parse-metadata"
     private const val TITLE_COPY_ACTION = "%(title)S:%($NAME_TITLE_FIELD)s"
 
-    /** The two spellings a persisted row can carry: today's `%(title).150B` and the older unbounded `%(title)s`. */
-    private val UNSAFE_TITLE = Regex("""%\(title\)(?:s|\.\d+B)""")
+    /** `%(title)s` (the older unbounded default) or `%(title).<n>B` (today's default, n = 150); captures n. */
+    private val UNSAFE_TITLE = Regex("""%\(title\)(?:s|\.(\d+)B)""")
 
     /**
      * Make the title part of a file name byte-exact at spawn time, so jobs persisted with `%(title)s`
@@ -89,10 +89,16 @@ object ArgReconciler {
      * limit. yt-dlp evaluates `%(title).150B` (cut raw bytes) BEFORE it sanitizes the result, and
      * sanitizing swaps each of `" * : < > ? | / \` for a 3-byte full-width look-alike - so a title of
      * mostly such characters grew from 150 B to 450 B. Cutting [NAME_TITLE_FIELD] (already sanitized) is
-     * exact, and the look-alikes stay exactly yt-dlp's own, as on Windows. Needs [titleCopyArgsFor].
+     * exact, and the look-alikes stay exactly yt-dlp's own, as on Windows.
+     *
+     * A cut a row already carries stays when it is tighter than [TITLE_BUDGET_BYTES] (it now counts sanitized bytes,
+     * so it can only be safer); a looser or missing one becomes [TITLE_BUDGET_BYTES]. Needs [titleCopyArgsFor].
      */
     fun byteSafeTemplate(template: String): String =
-        template.replace(UNSAFE_TITLE, "%($NAME_TITLE_REF).${TITLE_BUDGET_BYTES}B")
+        template.replace(UNSAFE_TITLE) { m ->
+            val keep = m.groupValues[1].toIntOrNull()?.coerceAtMost(TITLE_BUDGET_BYTES) ?: TITLE_BUDGET_BYTES
+            "%($NAME_TITLE_REF).${keep}B"
+        }
 
     /**
      * `--parse-metadata %(title)S:%(__sieve_title)s` when [template] reads that field; nothing otherwise. The target

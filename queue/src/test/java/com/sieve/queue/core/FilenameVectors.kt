@@ -167,3 +167,25 @@ internal val PLAYLIST_VECTORS: List<PlaylistVector> = listOf(
         fixed = "\uff1f".repeat(150) + " [PLtest123].info.json",
     ),
 )
+
+/**
+ * A row persisted with a cut of its own, `%(title).<persisted>B`, through the spawn-time rewrite: a cut tighter than
+ * 150 stays (now counting sanitized bytes), a looser one becomes 150. Captured from the real engines like the rest
+ * (a video, `id=dQw4w9WgXcQ`, `ext=mp4`); `legacy` is the persisted template as 1.0.3 spawned it.
+ */
+internal data class TemplateVector(val key: String, val persisted: String, val title: String, val legacy: String, val fixed: String)
+
+internal val TEMPLATE_VECTORS: List<TemplateVector> = listOf(
+    TemplateVector(
+        "tight-80", persisted = "%(title).80B [%(id)s].%(ext)s",
+        title = "?".repeat(200),
+        legacy = "\uff1f".repeat(80) + " [dQw4w9WgXcQ].mp4",
+        fixed = "\uff1f".repeat(26) + " [dQw4w9WgXcQ].mp4",
+    ),
+    TemplateVector(
+        "clamp-400", persisted = "%(title).400B [%(id)s].%(ext)s",
+        title = "?".repeat(200),
+        legacy = "\uff1f".repeat(200) + " [dQw4w9WgXcQ].mp4",
+        fixed = "\uff1f".repeat(50) + " [dQw4w9WgXcQ].mp4",
+    ),
+)

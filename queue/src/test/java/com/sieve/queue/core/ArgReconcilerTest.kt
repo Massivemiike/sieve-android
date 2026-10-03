@@ -100,6 +100,17 @@ class ArgReconcilerTest {
         assertEquals("%(__sieve_title,title).150B", ArgReconciler.byteSafeTemplate("%(title).150B"))
     }
 
+    @Test fun `byteSafeTemplate keeps a cut tighter than 150 and clamps a looser one`() {
+        assertEquals(
+            "%(__sieve_title,title).80B - %(uploader)s.%(ext)s",
+            ArgReconciler.byteSafeTemplate("%(title).80B - %(uploader)s.%(ext)s"),
+        )
+        assertEquals("%(__sieve_title,title).150B.%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B.%(ext)s"))
+        for (n in listOf("151", "400", "99999999999")) { // the last overflows an Int: still 150
+            assertEquals("%(__sieve_title,title).150B.%(ext)s", ArgReconciler.byteSafeTemplate("%(title).${n}B.%(ext)s"))
+        }
+    }
+
     @Test fun `buildSpawnArgs prepends invariant flags and injects output`() {
         val spec = JobSpec.Download("https://x", listOf("-f", "best"))
         val args = ArgReconciler.buildSpawnArgs(spec, PreparedOutput("/w/a", "%(title)s.%(ext)s"))
