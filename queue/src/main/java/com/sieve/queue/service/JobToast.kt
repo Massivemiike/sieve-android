@@ -1,7 +1,7 @@
 package com.sieve.queue.service
 
-import com.sieve.engine.parse.YtdlpErrors
 import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.FailureText
 import com.sieve.queue.core.JobKind
 import com.sieve.queue.core.QueueJob
 
@@ -17,7 +17,7 @@ object JobToast {
     fun text(job: QueueJob): String? = when (job.status) {
         DownloadStatus.COMPLETED -> QueueNotification.renderDone(job)?.title
         DownloadStatus.FAILED -> {
-            val reason = job.error?.takeIf { it.isNotBlank() }?.let { YtdlpErrors.format(YtdlpErrors.humanize(it)) }
+            val reason = job.error?.takeIf { it.isNotBlank() }?.let { FailureText.text(job) }
             if (job.kind == JobKind.TRANSCODE) {
                 val name = job.title.ifBlank { "file" }
                 if (reason == null) "Transcode failed: $name" else "Transcode failed: $name — $reason"

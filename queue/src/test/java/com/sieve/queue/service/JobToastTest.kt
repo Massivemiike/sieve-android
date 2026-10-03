@@ -55,6 +55,24 @@ class JobToastTest {
         assertEquals("Transcode failed: file", JobToast.text(tx(DownloadStatus.FAILED, title = "", error = null)))
     }
 
+    // A row failed by v1.0.3 or older keeps only "yt-dlp exited N" (and the old, unclamped template); the snackbar words it like the Queue row does.
+    private fun legacy(title: String) = dl(DownloadStatus.FAILED, title = title, error = "yt-dlp exited 1")
+        .copy(output = OutputRequest("d", "%(title)s [%(id)s].%(ext)s"))
+
+    @Test fun `a legacy failure with an overflowing title says the title made the file name too long`() {
+        assertEquals(
+            "Download failed: The title made the file name too long — Fixed, so Retry will work.",
+            JobToast.text(legacy("🎬".repeat(80))),
+        )
+    }
+
+    @Test fun `a legacy failure with a short title says yt-dlp stopped without a reason`() {
+        assertEquals(
+            "Download failed: yt-dlp stopped without reporting a reason (exit 1) — Retry may work.",
+            JobToast.text(legacy("Cats")),
+        )
+    }
+
     @Test fun `only finished outcomes get a toast`() {
         for (s in listOf(DownloadStatus.QUEUED, DownloadStatus.PREPARING, DownloadStatus.RUNNING, DownloadStatus.PAUSED, DownloadStatus.CANCELLED)) {
             assertNull("$s", JobToast.text(dl(s)))

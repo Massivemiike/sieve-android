@@ -242,11 +242,12 @@ private fun JobRow(
             Text(meta, style = MaterialTheme.typography.labelSmall, color = cs.onSurfaceVariant)
         }
         if (job.status == DownloadStatus.FAILED && !job.error.isNullOrBlank()) {
-            // job.error is yt-dlp's raw ERROR text (kept raw so retry classification sees real signals).
+            // job.error is yt-dlp's raw ERROR text (kept raw so retry classification sees real signals); the humanizer words it.
+            // Two lines: the hint after the dash says what to do, and one line cuts it off.
             Text(
-                ErrorHumanizer.humanize(job.error),
+                ErrorHumanizer.humanize(job),
                 style = MaterialTheme.typography.labelSmall, color = cs.error,
-                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.testTag("error_${job.id}"),
             )
             // A failed playlist keeps the entries that finished (QueueManager.keepFinishedFiles). Only a Uri is a

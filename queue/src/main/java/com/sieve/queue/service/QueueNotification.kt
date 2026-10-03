@@ -12,8 +12,8 @@ import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.sieve.engine.parse.YtdlpErrors
 import com.sieve.queue.core.DownloadStatus
+import com.sieve.queue.core.FailureText
 import com.sieve.queue.core.JobKind
 import com.sieve.queue.core.QueueAggregator
 import com.sieve.queue.core.QueueJob
@@ -98,7 +98,7 @@ object QueueNotification {
                 DoneModel("$verb: $name", if (uri != null) "Tap to open" else null, failed = false, openUri = uri)
             }
             DownloadStatus.FAILED ->
-                DoneModel("Failed: $name", YtdlpErrors.format(YtdlpErrors.humanize(job.error)), failed = true, openUri = null)
+                DoneModel("Failed: $name", FailureText.text(job), failed = true, openUri = null)
             else -> null
         }
     }

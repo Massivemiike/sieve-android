@@ -83,6 +83,20 @@ class QueueNotificationTest {
         assertTrue((n.flags and android.app.Notification.FLAG_ONGOING_EVENT) != 0)
     }
 
+    @Test fun `a failure notification words a legacy yt-dlp exited N like the Queue row`() {
+        fun legacy(title: String) = dl("a", DownloadStatus.FAILED, title = title)
+            .copy(error = "yt-dlp exited 1", output = OutputRequest("d", "%(title)s [%(id)s].%(ext)s"))
+        val caption = "🎬".repeat(80)
+        assertEquals(
+            DoneModel("Failed: $caption", "The title made the file name too long — Fixed, so Retry will work.", failed = true, openUri = null),
+            QueueNotification.renderDone(legacy(caption)),
+        )
+        assertEquals(
+            "yt-dlp stopped without reporting a reason (exit 1) — Retry may work.",
+            QueueNotification.renderDone(legacy("Cats"))!!.text,
+        )
+    }
+
     @Test fun `pending intents use distinct request codes`() {
         assertNotEquals(
             QueueNotification.requestCode("a", NotifAction.PAUSE),
