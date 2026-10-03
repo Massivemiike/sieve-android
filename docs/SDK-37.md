@@ -137,7 +137,7 @@ escalation `q, SIGTERM, "SIGKILL"` was really `q, SIGTERM, SIGTERM`, which a wed
 * `AndroidFfmpegProcess.destroyForcibly()` is a real SIGKILL (`android.os.Process.sendSignal` on the pid read from `Process.toString()`, logged), `awaitExit` declares a child that
   survives SIGKILL gone after 3 s, stdin writes and `destroy()` are bounded and abandonable, lines are read with a length bound (`BoundedLineReader`, 8192 chars).
 * `FfmpegRunner`: a stall watchdog (no `-progress` advance for `STALL_TIMEOUT_MS` = 120 s; counted in 1 s ticks so an OS freeze does not count) stops the process (`q`, SIGTERM, SIGKILL);
-  a run whose **video encoder is MediaCodec** (`-c:v h264_mediacodec` / `hevc_mediacodec` in the preset args, not merely the encoder toggle) that has not advanced at all 20 s after its spawn
+  a run whose **video encoder is MediaCodec** (`-c:v h264_mediacodec` / `hevc_mediacodec` in the preset args, not merely the encoder toggle)
   (`FIRST_PROGRESS_TIMEOUT_MS`; healthy MediaCodec runs produce their first frame within about a second, the signed 1.0.4 test saw four of five save a 19 s clip in 0.7-0.8 s and the fifth hang for 121 s)
   that has shown no media progress 20 s after its spawn is stalled too, so a hang before ffmpeg has written its first frame or packet costs about 20 s, not two minutes. "Media progress" is an `out_time`
   or a `frame` count beyond zero (or the end block): the muxer header's `total_size` and the repeated `frame=0 out_time=N/A` blocks of a wedged-but-open codec do not count, and the 20 s runs from the
