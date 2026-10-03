@@ -57,6 +57,38 @@ class RowProgressTest {
         assertEquals(RowProgress(0f, "0%"), rowProgress(job(DownloadStatus.PAUSED, UnifiedProgress(fraction = 0f))))
     }
 
+    // --- a paused transcode: ffmpeg cannot resume a partial output, so Resume starts it from 0 -------------------
+
+    private fun transcode(status: DownloadStatus, progress: UnifiedProgress) = QueueJob(
+        id = "t", spec = JobSpec.Transcode("/in/clip.mov", emptyList(), 60.0, usedHardwareEncoder = false),
+        output = OutputRequest("Download/Sieve", "%(title)s.%(ext)s"), status = status, progress = progress, title = "Clip",
+    )
+
+    @Test fun aPausedTranscodeShowsNoPercentAndNoBarBecauseItRestartsFromZero() {
+        val progress = UnifiedProgress(fraction = 0.42f, speed = "1.5x", eta = "paused", phase = Phase.PAUSED)
+        assertNull(rowProgress(transcode(DownloadStatus.PAUSED, progress)))
+        // the same progress on a download is kept: yt-dlp continues the partial file
+        assertEquals(RowProgress(0.42f, "42%"), rowProgress(job(DownloadStatus.PAUSED, progress)))
+    }
+
+    @Test fun aRunningTranscodeStillShowsItsStrip() {
+        val rp = rowProgress(transcode(DownloadStatus.RUNNING, UnifiedProgress(fraction = 0.42f, speed = "1.5x", eta = "00:20")))
+        assertEquals(RowProgress(0.42f, "42% · 1.5x · 00:20 left"), rp)
+    }
+
+    @Test fun aTranscodePausedByTheUserShowsNoStripEvenThoughTheReducerKeepsItsFraction() {
+        val running = transcode(DownloadStatus.RUNNING, UnifiedProgress(fraction = 0.4f, speed = "1.5x", eta = "00:30", phase = Phase.TRANSCODING))
+            .copy(cancelReason = CancelReason.PAUSE)
+        val paused = QueueReducer.reduce(
+            QueueState(jobs = listOf(running)),
+            QueueEvent.Signal(JobSignal.Terminal("t", Outcome.Cancelled(CancelReason.PAUSE))),
+        ).job("t")!!
+
+        assertEquals(DownloadStatus.PAUSED, paused.status)
+        assertNotNull(paused.progress.fraction) // it is still in the state...
+        assertNull(rowProgress(paused)) // ...but the row does not promise it
+    }
+
     @Test fun aPausedRowWithNoKnownProgressShowsNoStrip() {
         assertNull(rowProgress(job(DownloadStatus.PAUSED, UnifiedProgress(eta = "paused", phase = Phase.PAUSED))))
     }
