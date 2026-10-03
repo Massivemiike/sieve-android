@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -13,9 +13,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.sieve.app.di.AppGraph
-import com.sieve.app.ui.nav.Dest
-import com.sieve.app.ui.nav.NavRequests
-import com.sieve.app.ui.queue.showRestoredSnackbar
+import com.sieve.app.ui.queue.CoverRestoredNoticeOnQueue
+import com.sieve.app.ui.queue.announceRestoredItems
 import com.sieve.queue.service.JobToast
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -26,14 +25,14 @@ import kotlinx.coroutines.launch
  * The persistent progress notification itself is owned by :queue's foreground QueueService.
  */
 @Composable
-fun rememberAppSnackbarHost(): SnackbarHostState {
-    val host = remember { SnackbarHostState() }
+fun rememberAppSnackbars(): AppSnackbars {
+    val snackbars = remember { AppSnackbars() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // Messages from screens that have no Scaffold of their own (the Android 17 local-network prompt's answer): see SnackbarMessages.
     LaunchedEffect(Unit) {
-        SnackbarMessages.flow.collect { m -> scope.launch { host.showMessage(m) } }
+        SnackbarMessages.flow.collect { m -> scope.launch { snackbars.showMessage(m) } }
     }
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -53,17 +52,26 @@ fun rememberAppSnackbarHost(): SnackbarHostState {
             AppGraph.queue.state.value.jobs.filter { it.status.isTerminal }.mapTo(seen) { it.id }
             // The one-time "restored paused" migration says so once (the Queue banner stays until the user acts).
             // Own coroutine: the snackbar suspends until it is gone, and the completions below must not wait for it.
-            AppGraph.queue.consumeRestoreNotice().takeIf { it > 0 }?.let { n ->
-                scope.launch { showRestoredSnackbar(host, n) { NavRequests.open(Dest.QUEUE.route) } }
-            }
+            // It stays up until the user acts, but any snackbar below (or opening the Queue tab) takes it down first.
+            scope.launch { announceRestoredItems(snackbars, AppGraph.queue::consumeRestoreNotice) }
             AppGraph.queue.state.collect { st ->
                 st.jobs.forEach { j ->
                     // Same wording as the system notification and the desktop toasts (kind-aware, names the item).
                     val msg = JobToast.text(j)
-                    if (msg != null && seen.add(j.id)) scope.launch { host.showSnackbar(msg) }
+                    if (msg != null && seen.add(j.id)) scope.launch { snackbars.show(msg) }
                 }
             }
         }
     }
-    return host
+    return snackbars
+}
+
+/**
+ * The app-wide snackbar slot: shows [snackbars], and keeps the restored-items notice off the Queue tab (whose banner says the
+ * same). [currentRoute] is the route being shown.
+ */
+@Composable
+fun AppSnackbarHost(snackbars: AppSnackbars, currentRoute: String?) {
+    CoverRestoredNoticeOnQueue(snackbars, currentRoute)
+    SnackbarHost(snackbars.state)
 }

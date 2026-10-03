@@ -94,7 +94,7 @@ link or a LAN proxy would time out and be retried as a flaky network.
 
 **Adapted to the RC.** (a) A queued row is judged by the `--proxy` it carries: the RC bakes the Settings proxy into the row's yt-dlp arguments when it is enqueued, and a new
 download is judged by today's Settings proxy. If a later change moves the proxy to spawn time, `LocalNetworkGate.guard` must read the Settings proxy for rows without the flag.
-(b) The RC has no app-wide message mailbox, so the dialog's answer is posted through a small one, `SnackbarMessages`, which `rememberAppSnackbarHost` collects.
+(b) The RC has no app-wide message mailbox, so the dialog's answer is posted through a small one, `SnackbarMessages`, which `rememberAppSnackbars` collects.
 
 Limits, on purpose: never asked at launch and never below Android 17 (there the permission does not exist, so every question answers "not required" first); no prompt when the Proxy
 setting is saved (the first download that would use a LAN proxy asks); paths that do not go through the Download screen (Retry or Resume of a row that was queued before the permission was revoked) do not ask,

@@ -52,6 +52,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
+import com.sieve.app.ui.common.AppSnackbars
 import com.sieve.app.ui.common.ChipKind
 import com.sieve.app.ui.common.EmptyState
 import com.sieve.app.ui.common.ErrorHumanizer
@@ -69,7 +70,7 @@ fun QueueRoute(
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
-    val snackbar = remember { SnackbarHostState() }
+    val snackbars = remember { AppSnackbars() }
     val scope = rememberCoroutineScope()
     QueueScreen(
         state, vm::pause, vm::resume, vm::retry, vm::cancel,
@@ -78,9 +79,9 @@ fun QueueRoute(
         onResumeAllRestored = vm::resumeAllHeld,
         onDismissRestored = vm::dismissRestore,
         onOpen = { job ->
-            if (!OutputIntents.open(ctx, job.filePath)) scope.launch { snackbar.showSnackbar("Can't open this file") }
+            if (!OutputIntents.open(ctx, job.filePath)) scope.launch { snackbars.show("Can't open this file") }
         },
-        snackbarHost = snackbar,
+        snackbarHost = snackbars.state,
     )
 }
 

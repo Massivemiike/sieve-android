@@ -1,17 +1,20 @@
 package com.sieve.app.queue
 
 import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHostState
+import com.sieve.app.ui.common.AppSnackbars
 import com.sieve.app.ui.queue.RestoredCopy
+import com.sieve.app.ui.queue.announceRestoredItems
 import com.sieve.app.ui.queue.showRestoredSnackbar
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class RestoredNoticeTest {
@@ -27,33 +30,66 @@ class RestoredNoticeTest {
     }
 
     @Test fun snackbarOffersViewAndTheTapOpensTheQueue() = runTest {
-        val host = SnackbarHostState()
+        val snackbars = AppSnackbars()
         var opened = 0
-        launch { showRestoredSnackbar(host, 3) { opened++ } }
+        launch { showRestoredSnackbar(snackbars, 3) { opened++ } }
         runCurrent()
 
-        val data = assertNotNull(host.currentSnackbarData)
+        val data = assertNotNull(snackbars.state.currentSnackbarData)
         assertEquals("Restored 3 unfinished items — paused", data.visuals.message)
         assertEquals("View", data.visuals.actionLabel)
-        assertEquals(SnackbarDuration.Long, data.visuals.duration, "not left up forever, but long enough to read and tap")
         assertEquals(0, opened)
 
         data.performAction()
         runCurrent()
         assertEquals(1, opened)
-        assertNull(host.currentSnackbarData)
+        assertNull(snackbars.state.currentSnackbarData)
+    }
+
+    @Test fun snackbarStaysUntilTheUserActsAndCanBeDismissed() = runTest {
+        // Its look: no timeout, and a close button. TalkBack announces it through the snackbar's own live region.
+        val snackbars = AppSnackbars()
+        launch { showRestoredSnackbar(snackbars, 3) {} }
+        runCurrent()
+
+        val visuals = assertNotNull(snackbars.state.currentSnackbarData).visuals
+        assertEquals(SnackbarDuration.Indefinite, visuals.duration)
+        assertTrue(visuals.withDismissAction)
+
+        snackbars.state.currentSnackbarData!!.dismiss()
+        runCurrent()
     }
 
     @Test fun dismissingTheSnackbarDoesNotNavigate() = runTest {
-        val host = SnackbarHostState()
+        val snackbars = AppSnackbars()
         var opened = 0
-        launch { showRestoredSnackbar(host, 1) { opened++ } }
+        launch { showRestoredSnackbar(snackbars, 1) { opened++ } }
         runCurrent()
 
-        host.currentSnackbarData!!.dismiss()
+        snackbars.state.currentSnackbarData!!.dismiss()
         runCurrent()
 
         assertEquals(0, opened)
-        assertNull(host.currentSnackbarData)
+        assertNull(snackbars.state.currentSnackbarData)
+    }
+
+    @Test fun theLaunchNoticeAppearsOnceForTheOneTimeFlag() = runTest {
+        val snackbars = AppSnackbars()
+        val flag = AtomicInteger(3) // the queue's consumeRestoreNotice(): the count once, then 0
+        val shown = mutableListOf<String>()
+        repeat(3) {
+            launch { announceRestoredItems(snackbars, { flag.getAndSet(0) }) {} }
+            runCurrent()
+            snackbars.state.currentSnackbarData?.let { shown += it.visuals.message; it.dismiss() }
+            runCurrent()
+        }
+        assertEquals(listOf("Restored 3 unfinished items — paused"), shown)
+    }
+
+    @Test fun noRestoredRowsMeansNoSnackbar() = runTest {
+        val snackbars = AppSnackbars()
+        launch { announceRestoredItems(snackbars, { 0 }) {} }
+        runCurrent()
+        assertNull(snackbars.state.currentSnackbarData)
     }
 }
