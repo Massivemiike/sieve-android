@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -34,11 +36,14 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,13 +67,20 @@ import com.sieve.queue.core.DownloadStatus
 import com.sieve.queue.core.Phase
 import com.sieve.queue.core.QueueJob
 import com.sieve.queue.service.OutputIntents
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 @Composable
 fun QueueRoute(
     vm: QueueViewModel = viewModel(factory = viewModelFactory { initializer { QueueViewModel.from() } }),
+    reveal: StateFlow<String?> = QueueReveal.id,
+    onRevealed: (String) -> Unit = QueueReveal::consume,
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val revealJobId by reveal.collectAsStateWithLifecycle()
     val ctx = LocalContext.current
     val snackbars = remember { AppSnackbars() }
     val scope = rememberCoroutineScope()
@@ -82,9 +94,15 @@ fun QueueRoute(
             if (!OutputIntents.open(ctx, job.filePath)) scope.launch { snackbars.show("Can't open this file") }
         },
         snackbarHost = snackbars.state,
+        revealJobId = revealJobId,
+        onRevealed = onRevealed,
     )
 }
 
+/**
+ * [revealJobId] is the row the user just added ([QueueReveal]): the list is oldest-first, so on a long queue it sits below
+ * the fold. It is scrolled into view once, then [onRevealed] says the request is done.
+ */
 @Composable
 fun QueueScreen(
     state: QueueUiState,
@@ -98,7 +116,12 @@ fun QueueScreen(
     onDismissRestored: () -> Unit = {},
     onOpen: (QueueJob) -> Unit = {},
     snackbarHost: SnackbarHostState = remember { SnackbarHostState() },
+    revealJobId: String? = null,
+    onRevealed: (String) -> Unit = {},
 ) {
+    // Hoisted out of the list branch below: the empty state swaps the list out, and the reveal needs the same state throughout.
+    val listState = rememberLazyListState()
+    RevealAddedRow(listState, state.jobs, revealJobId, onRevealed)
     Scaffold(
         topBar = {
             Column {
@@ -118,7 +141,8 @@ fun QueueScreen(
             }
         } else {
             LazyColumn(
-                modifier = Modifier.padding(padding).fillMaxWidth(),
+                state = listState,
+                modifier = Modifier.padding(padding).fillMaxWidth().testTag("queue_list"),
                 contentPadding = PaddingValues(14.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -128,6 +152,50 @@ fun QueueScreen(
             }
         }
     }
+}
+
+/**
+ * Brings the row [requestedId] into view, once, then calls [onHandled]. Windows' Queue page does the same for the active
+ * rows (`scrollIntoView`); here the trigger is the user's own add. It does not fight the user:
+ *  - the queue appends the row a moment after the tap, so it may not be in [jobs] yet; if the list is scrolled while we wait,
+ *    the user has taken over and the request is dropped;
+ *  - the scroll is an ordinary (not user-input priority) one, so a drag or fling pre-empts it and the request is dropped too;
+ *  - a request is handled at most once, so a recreated screen or a later visit to the tab never re-scrolls to an old row.
+ * A row that is already fully on screen is left where it is.
+ */
+@Composable
+private fun RevealAddedRow(
+    listState: LazyListState,
+    jobs: List<QueueJob>,
+    requestedId: String?,
+    onHandled: (String) -> Unit,
+) {
+    val latestJobs by rememberUpdatedState(jobs)
+    val latestOnHandled by rememberUpdatedState(onHandled)
+    LaunchedEffect(requestedId) {
+        val id = requestedId ?: return@LaunchedEffect
+        val startIndex = listState.firstVisibleItemIndex
+        val startOffset = listState.firstVisibleItemScrollOffset
+        val index = snapshotFlow { latestJobs.indexOfFirst { it.id == id } }.first { it >= 0 }
+        val userScrolled = listState.firstVisibleItemIndex != startIndex ||
+            listState.firstVisibleItemScrollOffset != startOffset || listState.isScrollInProgress
+        if (!userScrolled && !listState.isFullyVisible(index)) {
+            try {
+                listState.animateScrollToItem(index)
+            } catch (e: CancellationException) {
+                // Pre-empted by the user's own scroll (the coroutine is still active): they win. If the screen itself went away,
+                // the request stays pending for the next time the Queue is shown.
+                if (!isActive) throw e
+            }
+        }
+        latestOnHandled(id)
+    }
+}
+
+private fun LazyListState.isFullyVisible(index: Int): Boolean {
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return false
+    return item.offset >= info.viewportStartOffset && item.offset + item.size <= info.viewportEndOffset
 }
 
 @Composable

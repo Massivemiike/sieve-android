@@ -3,6 +3,7 @@ package com.sieve.app.ui.transcode
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sieve.app.di.AppGraph
+import com.sieve.app.ui.queue.QueueReveal
 import com.sieve.queue.core.JobSpec
 import com.sieve.queue.core.OutputRequest
 import com.sieve.queue.core.QueueJob
@@ -194,7 +195,8 @@ class TranscodeViewModel(
     companion object {
         fun from(): TranscodeViewModel = TranscodeViewModel(
             detector = AppGraph.encoderDetector,
-            enqueue = { AppGraph.queue.enqueue(it) },
+            // The user's own add: the Queue tab shows the new row (a batch reveals its last one).
+            enqueue = { AppGraph.queue.enqueue(it); QueueReveal.request(it.id) },
             materialize = { uri, name -> AppGraph.materializeSource(uri, name) },
             outputDirLabel = { AppGraph.storageSettings.prefs.first().outputDirLabelDefault ?: "" },
             probeDuration = { path -> withContext(Dispatchers.IO) { SourceProbe.probe(path)?.durationSec } },

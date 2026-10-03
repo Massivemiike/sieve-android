@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sieve.app.di.AppGraph
 import com.sieve.app.settings.NetworkSettings
+import com.sieve.app.ui.queue.QueueReveal
 import com.sieve.engine.args.DownloadArgsOptions
 import com.sieve.engine.args.EngineSettings
 import com.sieve.engine.args.YtdlpArgs
@@ -170,7 +171,8 @@ class DownloadViewModel(
     companion object {
         fun from(): DownloadViewModel = DownloadViewModel(
             engine = AppGraph.engine,
-            enqueue = { AppGraph.queue.enqueue(it) },
+            // The user's own add: the Queue tab shows the new row (it is appended below the fold on a long list).
+            enqueue = { AppGraph.queue.enqueue(it); QueueReveal.request(it.id) },
             engineSettings = {
                 val p = AppGraph.appSettings.flow.first()
                 defaultEngineSettings().copy(
