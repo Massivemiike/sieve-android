@@ -1,0 +1,124 @@
+package com.sieve.queue.core
+
+/**
+ * Titles and the file names the REAL yt-dlp builds from them: the desktop 2026.08.19 (the engine the phone
+ * self-updates to); the 2025.11.12 inside the APK gives the same names. Captured with
+ * `yt-dlp --load-info-json <id=dQw4w9WgXcQ, ext=mp4, title=...> --simulate --print filename` and these two arg sets:
+ *  - legacy: `-o "%(title).150B [%(id)s].%(ext)s"`
+ *  - fixed:  `--parse-metadata "%(title)S:%(sieve_title)s" -o "%(sieve_title).150B [%(id)s].%(ext)s"`
+ * [YtdlpFilenameModel] must reproduce every one of them, and the spawn args the queue really builds are
+ * rendered through that model, so a drift between the model and yt-dlp, or between the args and the fix,
+ * fails a test. Re-capture when the engine's `sanitize_filename` changes.
+ */
+internal data class FilenameVector(val key: String, val title: String, val legacy: String, val fixed: String)
+
+internal val FILENAME_VECTORS: List<FilenameVector> = listOf(
+    FilenameVector(
+        "plain",
+        title = "Rick Astley - Never Gonna Give You Up (Official Music Video)",
+        legacy = "Rick Astley - Never Gonna Give You Up (Official Music Video) [dQw4w9WgXcQ].mp4",
+        fixed = "Rick Astley - Never Gonna Give You Up (Official Music Video) [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "phone-linkedin",
+        title = "What Is MathWorks Cloud Center? | MathWorks",
+        legacy = "What Is MathWorks Cloud Center\uff1f \uff5c MathWorks [dQw4w9WgXcQ].mp4",
+        fixed = "What Is MathWorks Cloud Center\uff1f \uff5c MathWorks [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "timestamp",
+        title = "Episode 12:30 Live: Part 2? Yes 1:2:3 end",
+        legacy = "Episode 12_30 Live\uff1a Part 2\uff1f Yes 1_2_3 end [dQw4w9WgXcQ].mp4",
+        fixed = "Episode 12_30 Live\uff1a Part 2\uff1f Yes 1_2_3 end [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "all-nine",
+        title = "\"Quoted\" <title> *star* a/b\\c? d|e: f",
+        legacy = "\uff02Quoted\uff02 \uff1ctitle\uff1e \uff0astar\uff0a a\u29f8b\u29f9c\uff1f d\uff5ce\uff1a f [dQw4w9WgXcQ].mp4",
+        fixed = "\uff02Quoted\uff02 \uff1ctitle\uff1e \uff0astar\uff0a a\u29f8b\u29f9c\uff1f d\uff5ce\uff1a f [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "newline-tab",
+        title = "Line one\nLine two\tTabbed\r\nLine three",
+        legacy = "Line one Line twoTabbed Line three [dQw4w9WgXcQ].mp4",
+        fixed = "Line one Line twoTabbed Line three [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "leading-dash",
+        title = "-- Topic | Video?",
+        legacy = "-- Topic \uff5c Video\uff1f [dQw4w9WgXcQ].mp4",
+        fixed = "-- Topic \uff5c Video\uff1f [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "leading-dot",
+        title = ".hidden: file",
+        legacy = ".hidden\uff1a file [dQw4w9WgXcQ].mp4",
+        fixed = ".hidden\uff1a file [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "cjk",
+        title = "\u6f22\u5b57?\u304b\u306a: \ud55c\uae00 | ok",
+        legacy = "\u6f22\u5b57\uff1f\u304b\u306a\uff1a \ud55c\uae00 \uff5c ok [dQw4w9WgXcQ].mp4",
+        fixed = "\u6f22\u5b57\uff1f\u304b\u306a\uff1a \ud55c\uae00 \uff5c ok [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "fullwidth-already",
+        title = "\uff1f\uff5c already full-width \u29f8",
+        legacy = "\uff1f\uff5c already full-width \u29f8 [dQw4w9WgXcQ].mp4",
+        fixed = "\uff1f\uff5c already full-width \u29f8 [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "cut-mid-glyph-149",
+        title = "a".repeat(149) + "?",
+        legacy = "a".repeat(149) + "\uff1f [dQw4w9WgXcQ].mp4",
+        fixed = "a".repeat(149) + " [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "cut-mid-glyph-148",
+        title = "a".repeat(148) + "?",
+        legacy = "a".repeat(148) + "\uff1f [dQw4w9WgXcQ].mp4",
+        fixed = "a".repeat(148) + " [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "cut-exact-147",
+        title = "a".repeat(147) + "?",
+        legacy = "a".repeat(147) + "\uff1f [dQw4w9WgXcQ].mp4",
+        fixed = "a".repeat(147) + "\uff1f [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "qmarks-200",
+        title = "?".repeat(200),
+        legacy = "\uff1f".repeat(150) + " [dQw4w9WgXcQ].mp4",
+        fixed = "\uff1f".repeat(50) + " [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "pipes-150",
+        title = "|".repeat(150) + " tail",
+        legacy = "\uff5c".repeat(150) + " [dQw4w9WgXcQ].mp4",
+        fixed = "\uff5c".repeat(50) + " [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "mixed-punct",
+        title = "What? Who| Why: How* ".repeat(11) + "What? Who| Why: How*",
+        legacy = "What\uff1f Who\uff5c Why\uff1a How\uff0a ".repeat(7) + "Wha [dQw4w9WgXcQ].mp4",
+        fixed = "What\uff1f Who\uff5c Why\uff1a How\uff0a ".repeat(5) + "What [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "emoji-qmarks",
+        title = "\ud83d\ude00?".repeat(100),
+        legacy = "\ud83d\ude00\uff1f".repeat(30) + " [dQw4w9WgXcQ].mp4",
+        fixed = "\ud83d\ude00\uff1f".repeat(21) + " [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "facebook-caption",
+        title = "Line one: why?\nLine two | \"quoted\" <b>bold</b> *star* ".repeat(6),
+        legacy = "Line one\uff1a why\uff1f Line two \uff5c \uff02quoted\uff02 \uff1cb\uff1ebold\uff1c\u29f8b\uff1e \uff0astar\uff0a Line one\uff1a why\uff1f Line two \uff5c \uff02quoted\uff02 \uff1cb\uff1ebold\uff1c\u29f8b\uff1e \uff0astar\uff0a Line one\uff1a why\uff1f Line two \uff5c \uff02quoted\uff02 \uff1cb\uff1ebold [dQw4w9WgXcQ].mp4",
+        fixed = "Line one\uff1a why\uff1f Line two \uff5c \uff02quoted\uff02 \uff1cb\uff1ebold\uff1c\u29f8b\uff1e \uff0astar\uff0a Line one\uff1a why\uff1f Line two \uff5c \uff02quoted\uff02 \uff1cb\uff1ebold\uff1c\u29f8b\uff1e \uff0ast [dQw4w9WgXcQ].mp4",
+    ),
+    FilenameVector(
+        "only-newline",
+        title = "\n",
+        legacy = "_ [dQw4w9WgXcQ].mp4",
+        fixed = "_ [dQw4w9WgXcQ].mp4",
+    ),
+)

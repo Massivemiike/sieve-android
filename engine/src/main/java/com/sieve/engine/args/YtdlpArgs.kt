@@ -11,6 +11,9 @@ object YtdlpArgs {
     // Title clamped to 150 BYTES: Android's ext4 caps a filename at 255 bytes, and yt-dlp appends
     // ".f<format-id>.<ext>.part" while downloading separate streams. Facebook titles are the whole
     // post caption (emoji included), which overflowed it → "[Errno 36] File name too long".
+    // This is the template as PERSISTED on a job (and as the desktop reads it); yt-dlp cuts it before it
+    // sanitizes the name, and sanitizing can triple a title of `? | :` characters, so the queue rewrites
+    // it at spawn time to cut the already-sanitized title (ArgReconciler.byteSafeTemplate).
     const val DEFAULT_TEMPLATE = "%(title).150B [%(id)s].%(ext)s"
     const val DEFAULT_OUTPUT_PATH = "~/Videos/yt-dlp"
 

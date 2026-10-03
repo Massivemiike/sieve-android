@@ -43,7 +43,30 @@ class ArgReconcilerTest {
             listOf("-f", "best", "-P", "/old", "-o", "x.%(ext)s"),
             PreparedOutput(workDir = "/work/job-a", workFileTemplate = "%(title)s [%(id)s].%(ext)s"),
         )
-        assertEquals(listOf("-f", "best", "-P", "/work/job-a", "-o", "%(title).150B [%(id)s].%(ext)s"), out)
+        assertEquals(
+            listOf(
+                "-f", "best", "-P", "/work/job-a", "-o", "%(sieve_title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(sieve_title)s",
+            ),
+            out,
+        )
+    }
+
+    @Test fun `a row persisted by 1_0_3 or the 1_0_4 RC is spawned with the byte-exact title cut`() {
+        // YtdlpArgs.build() put -o and -P in the persisted args; the output seam's template is the persisted outputTemplate.
+        val out = ArgReconciler.buildSpawnArgs(
+            JobSpec.Download("https://x", listOf("-f", "bestvideo*+bestaudio/best", "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp", "--embed-metadata")),
+            PreparedOutput("/work/job-a", "%(title).150B [%(id)s].%(ext)s"),
+        )
+        assertEquals(
+            listOf(
+                "--newline", "-c", "--no-warnings",
+                "-f", "bestvideo*+bestaudio/best", "--embed-metadata",
+                "-P", "/work/job-a", "-o", "%(sieve_title).150B [%(id)s].%(ext)s",
+                "--parse-metadata", "%(title)S:%(sieve_title)s",
+            ),
+            out,
+        )
     }
 
     @Test fun `injectDownloadOutput points yt-dlp at the job's download archive`() {
@@ -63,10 +86,12 @@ class ArgReconcilerTest {
         assertEquals("/mine/archive.txt", out[out.indexOf("--download-archive") + 1])
     }
 
-    @Test fun `byteSafeTemplate clamps an unbounded title and leaves others alone`() {
-        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
-        assertEquals("%(title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+    @Test fun `byteSafeTemplate cuts the sanitized title copy and leaves other templates alone`() {
+        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title)s [%(id)s].%(ext)s"))
+        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(title).150B [%(id)s].%(ext)s"))
+        assertEquals("%(sieve_title).150B [%(id)s].%(ext)s", ArgReconciler.byteSafeTemplate("%(sieve_title).150B [%(id)s].%(ext)s"))
         assertEquals("%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(id)s.%(ext)s"))
+        assertEquals("%(playlist_title)s/%(id)s.%(ext)s", ArgReconciler.byteSafeTemplate("%(playlist_title)s/%(id)s.%(ext)s"))
     }
 
     @Test fun `buildSpawnArgs prepends invariant flags and injects output`() {
