@@ -88,6 +88,25 @@ class ArgReconcilerTest {
         }
     }
 
+    // ...and so do rows saved by the first 1.0.4 release candidate (419d299): their H.264-first MP4 selector and sort stay as stored.
+    @Test fun `args stored by the first release candidate are spawned as they are, with no migration`() {
+        val rc1Format = "bv[vcodec~='^(avc|h264)']+ba/b[vcodec~='^(avc|h264)']/" +
+            "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']/b[format_id=sd][ext=mp4]/bv*+ba/b"
+        for (cap in listOf(1080, 720)) {
+            val stored = listOf(
+                "-f", rc1Format, "-o", "%(title)s [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+                "-S", "res:$cap,vcodec:h264,acodec:aac,ext:mp4:m4a", "--merge-output-format", "mp4",
+                "--embed-metadata", "--embed-thumbnail", "-N", "4",
+            )
+            val prepared = PreparedOutput("/work/a", "%(title)s [%(id)s].%(ext)s")
+            val out = ArgReconciler.injectDownloadOutput(ArgReconciler.ensureContinue(stored), prepared)
+            val expected = listOf("-c") + stored.filterIndexed { i, _ -> i !in 2..5 } +
+                listOf("-P", "/work/a", "-o", "%(title).150B [%(id)s].%(ext)s")
+            assertEquals(expected, out)
+            assertTrue(out.none { "proto" in it || "[width>" in it }) // none of the keep-resolution selector or sort crept in
+        }
+    }
+
     @Test fun `buildSpawnArgs prepends invariant flags and injects output`() {
         val spec = JobSpec.Download("https://x", listOf("-f", "best"))
         val args = ArgReconciler.buildSpawnArgs(spec, PreparedOutput("/w/a", "%(title)s.%(ext)s"))

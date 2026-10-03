@@ -3,18 +3,18 @@ package com.sieve.app.download
 import com.sieve.app.ui.download.DownloadPresets
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /**
- * The preset strings are the contract with yt-dlp, and a one-character change flips real downloads (VP9 in an .mp4, a VBR
- * "320", an .m4a "Opus"). They were proved against YouTube (landscape + Shorts), LinkedIn, SoundCloud, Facebook, Instagram,
- * Vimeo, X and Dailymotion with yt-dlp 2026.08.19 + ffprobe; these tests lock exactly what was proved.
+ * The preset strings are the contract with yt-dlp, and a one-character change flips real downloads (a lower-resolution H.264
+ * over a sharper VP9, a VBR "320", an .m4a "Opus"). They were proved against YouTube (landscape + Shorts), LinkedIn, SoundCloud,
+ * Facebook (ten videos), Instagram, Vimeo, X and Dailymotion with yt-dlp 2026.08.19 + ffprobe; these tests lock exactly what was
+ * proved.
  */
 class DownloadPresetsTest {
-    private val h264 = "[vcodec~='^(avc|h264)']"
-
     @Test fun presetIdsAreUniqueAndTheDefaultExists() {
         val ids = DownloadPresets.ALL.map { it.id }
         assertEquals(ids.size, ids.toSet().size)
@@ -22,81 +22,131 @@ class DownloadPresetsTest {
         assertEquals(DownloadPresets.DEFAULT_ID, DownloadPresets.byId("no-such-preset").id)
     }
 
-    // ---- 1080p / 720p MP4: H.264 first, sized by the SHORT side, never an unknown-codec VP9 ----
+    // ---- 1080p / 720p MP4: the best resolution within the short-side cap; H.264 only breaks ties ----
 
-    @Test fun bothMp4PresetsShareOneH264FirstChainInThePromisedOrder() {
-        val expected = listOf(
-            "bv$h264+ba", // known H.264 video + separate audio (YouTube, Instagram, X, Vimeo)
-            "b$h264", // a known-H.264 file that carries its own audio (Dailymotion)
-            // Facebook's progressive hd, only when its CDN tag says H.264 (an old video's hd, never the VP9 re-encode)
-            "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']",
-            "b[format_id=sd][ext=mp4]", // Facebook: its progressive sd is H.264 on every video probed
-            "bv*+ba", // no H.264 at all: any video + audio
-            "b", // ...and anything, so a download never fails with "format not available"
+    private val fbHdRule = "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*_720p)(&|\$)']"
+
+    @Test fun the720SelectorIsTheFacebookHdRuleThenAnyVideoThenAnyFile() {
+        // No guard above 720 (nothing can be bigger than the Facebook hd and still inside a 720 cap), no codec filter.
+        assertEquals("$fbHdRule/bv*+ba/b", DownloadPresets.mp4Format(720))
+        assertEquals(DownloadPresets.mp4Format(720), DownloadPresets.byId("best-720").format)
+    }
+
+    @Test fun the1080SelectorPutsTwoBiggerThan720GuardsInFrontOfTheFacebookHdRule() {
+        assertEquals(
+            "bv*[width>720][width<=1080][height>1080]+ba/bv*[height>720][height<=1080][width>720]+ba/$fbHdRule/bv*+ba/b",
+            DownloadPresets.mp4Format(1080),
         )
+        assertEquals(DownloadPresets.mp4Format(1080), DownloadPresets.byId("best-1080").format)
+    }
+
+    @Test fun neitherMp4SelectorFiltersOnCodecSoH264CanNeverOutrankAHigherResolution() {
+        // The first RC's `bv[vcodec~='^(avc|h264)']+ba/...` took the lower-resolution H.264 whenever there was any (a Facebook reel's
+        // 362x640 sd over its 480x848 VP9, Shorts' 608x1080 H.264 over the 720x1280 VP9). H.264 is a sort key AFTER the resolution.
         for (id in listOf("best-1080", "best-720")) {
-            assertEquals(expected, DownloadPresets.byId(id).format.split('/'), id)
-            assertEquals(DownloadPresets.MP4_FORMAT, DownloadPresets.byId(id).format, id)
+            val f = DownloadPresets.byId(id).format
+            // (the Facebook hd rule names a CDN tag, `dash_h264...`, to rank a file yt-dlp cannot see: it is not a codec filter)
+            val rest = f.replace(fbHdRule, "")
+            for (word in listOf("vcodec", "acodec", "avc", "h264", "h265", "vp9", "av1")) assertFalse(word in rest, "$id mentions $word")
+            val keys = Regex("""\[(\w+)[~=<>!]""").findAll(f).map { it.groupValues[1] }.toSet()
+            assertTrue(keys.all { it in setOf("width", "height", "format_id", "ext", "url") }, "$id filters on $keys")
         }
     }
 
-    /** The tag Facebook's CDN puts last in a progressive stream's URL, and what ffprobe found in the file behind it. */
+    /** What `[width>720]` style filters accept: a format of KNOWN size only (yt-dlp rejects a missing field). */
+    private fun accepts(tier: String, width: Int?, height: Int?): Boolean = Regex("""\[(width|height)(>=|<=|>|<)(\d+)]""").findAll(tier).all { m ->
+        val v = (if (m.groupValues[1] == "width") width else height) ?: return@all false
+        val n = m.groupValues[3].toInt()
+        when (m.groupValues[2]) { ">" -> v > n; "<" -> v < n; ">=" -> v >= n; else -> v <= n }
+    }
+
+    @Test fun theTwoGuardsAreDisjointAndTogetherExactlyShortSideAbove720UpToTheCap() {
+        val sides = listOf(null, 1, 144, 480, 640, 719, 720, 721, 810, 900, 1079, 1080, 1081, 1280, 1440, 1920, 2160, 3840)
+        for (cap in listOf(1080, 900, 1440)) {
+            val tiers = DownloadPresets.mp4Format(cap).split('/').filter { "[width>" in it || "[height>" in it }
+                .filter { "format_id" !in it }
+            assertEquals(2, tiers.size, "cap $cap")
+            for (w in sides) for (h in sides) {
+                val hits = tiers.count { accepts(it, w, h) }
+                val shortSide = if (w == null || h == null) null else minOf(w, h)
+                val inRange = shortSide != null && shortSide > 720 && shortSide <= cap
+                assertEquals(inRange, hits > 0, "${w}x$h under a $cap cap")
+                assertTrue(hits <= 1, "${w}x$h matched both guards")
+            }
+        }
+    }
+
+    @Test fun aCapBelowTheFacebookHdSizeIsRefused() {
+        assertFailsWith<IllegalArgumentException> { DownloadPresets.mp4Format(480) }
+        assertFailsWith<IllegalArgumentException> { DownloadPresets.mp4Format(719) }
+        assertTrue(DownloadPresets.mp4Format(720).isNotEmpty()) // 720 itself is the smallest cap the rule is valid for
+    }
+
+    /**
+     * The tag Facebook's CDN puts last in a progressive stream's URL, and what ffprobe found in the file behind it. Only a tag that
+     * is H.264 AND 720p is ranked as the 720p H.264 it is; every other tag is just an unknown-size file.
+     */
     private val probedFacebookHdTags = mapOf(
-        "hd" to "h264", // an old video (uploaded about twelve years ago): H.264 High 1280x720
-        "dash_h264-basic-gen2_720p" to "h264", // H.264 High 720x1280, beside VP9 DASH video
-        "compressed_source" to "vp9", // reel 480x848, video 1080x1080, video 1080x1920 (three videos)
-        "av1_compressed_source" to "av1", // by its name (the 1080p+ file could not be probed from a partial download)
+        "hd" to "h264 1280x720", // an old video (uploaded about twelve years ago)
+        "dash_h264-basic-gen2_720p" to "h264 720x1280", // beside VP9 DASH video up to 720x1280
+        "compressed_source" to "vp9", // reel 480x848, videos 1080x1080 and 1080x1920
+        "av1_compressed_source" to "av1", // 1920x1080 (a 75-minute video)
     )
 
     /** yt-dlp's `[url~='...']` is `re.search`; Kotlin's `containsMatchIn` is the same for this regex's plain syntax. */
-    private fun hdTagRegex(): Regex = Regex(DownloadPresets.FB_H264_HD_TAG)
+    private fun hdTagRegex(): Regex = Regex(DownloadPresets.FB_H264_720P_HD_TAG)
 
     @Test fun theFacebookHdRuleIsInTheChainAndUsesTheTagRegex() {
         for (id in listOf("best-1080", "best-720")) {
-            assertTrue("[url~='${DownloadPresets.FB_H264_HD_TAG}']" in DownloadPresets.byId(id).format, id)
+            assertTrue("[url~='${DownloadPresets.FB_H264_720P_HD_TAG}']" in DownloadPresets.byId(id).format, id)
         }
     }
 
-    @Test fun onlyAFacebookHdWhoseTagSaysH264IsTaken() {
+    @Test fun onlyAFacebookHdWhoseTagSaysH264At720pIsRankedAsOne() {
         val re = hdTagRegex()
-        for ((tag, codec) in probedFacebookHdTags) {
+        for ((tag, probed) in probedFacebookHdTags) {
             val url = "https://video-sjc6-1.xx.fbcdn.net/o1/v/t2/f2/m69/x.mp4?_nc_cat=1&efg=eyJ2ZW5jb2RlX3RhZyI6Ij&oh=00_A&oe=6A1&bitrate=123&tag=$tag"
-            assertEquals(codec == "h264", re.containsMatchIn(url), "tag=$tag is $codec")
+            assertEquals(probed.startsWith("h264"), re.containsMatchIn(url), "tag=$tag is $probed")
         }
         // the tag may also come first or in the middle of the query
         assertTrue(re.containsMatchIn("https://x/y.mp4?tag=hd"))
         assertTrue(re.containsMatchIn("https://x/y.mp4?a=1&tag=hd&b=2"))
-        assertTrue(re.containsMatchIn("https://x/y.mp4?a=1&tag=dash_h264-basic-gen2_1080p&b=2"))
+        assertTrue(re.containsMatchIn("https://x/y.mp4?a=1&tag=dash_h264-basic-gen2_720p&b=2"))
     }
 
-    @Test fun anUnknownOrLookAlikeFacebookTagFallsBackToSdNeverToAnUnprovenHd() {
+    @Test fun anUnknownOrUnprovenFacebookTagIsNeverRankedAs720pH264() {
         val re = hdTagRegex()
-        for (tag in listOf("sd", "sve_sd", "hdr", "hd_vp9", "HD", "dash_vp9-basic-gen2_720p", "dash_r2av1-r1gen2vp9_q20", "", "dash_h265")) {
-            assertFalse(re.containsMatchIn("https://x/y.mp4?a=1&tag=$tag"), "tag=$tag")
-        }
+        // Not proven H.264 at 720p: it competes as an unknown-size file (below every DASH format yt-dlp can size), never above one.
+        val tags = listOf(
+            "sd", "sve_sd", "hdr", "hd_vp9", "HD", "dash_vp9-basic-gen2_720p", "dash_r2av1-r1gen2vp9_q20", "", "dash_h265",
+            "dash_h264-basic-gen2_1080p", "dash_h264-basic-gen2_480p", "dash_h264-basic-gen2", "dash_h264-basic-gen2_720p_x",
+        )
+        for (tag in tags) assertFalse(re.containsMatchIn("https://x/y.mp4?a=1&tag=$tag"), "tag=$tag")
         assertFalse(re.containsMatchIn("https://x/y.mp4?a=1&xtag=hd")) // another parameter that merely ends in "tag"
         assertFalse(re.containsMatchIn("https://x/hd/tag=hd/y.mp4")) // not in the query
         assertFalse(re.containsMatchIn("https://example.com/video.mp4")) // a site with no tag at all
     }
 
-    @Test fun theMp4SizeCapIsTheShortSideNotTheHeight() {
+    @Test fun theSortRanksTheSmallestSideFirstAndH264OnlyBreaksTiesAtThatResolution() {
         for ((id, limit) in listOf("best-1080" to 1080, "best-720" to 720)) {
             val p = DownloadPresets.byId(id)
-            // `[height<=N]` dropped a vertical video (480x848 is "480p") and every format of unknown height.
-            assertFalse("height" in p.format || "width" in p.format, id)
             val sort = p.extraArgs[p.extraArgs.indexOf("-S") + 1].split(',')
-            assertEquals("res:$limit", sort.first(), id) // yt-dlp's `res` is min(width, height)
-            assertEquals(listOf("res:$limit", "vcodec:h264", "acodec:aac", "ext:mp4:m4a"), sort, id)
+            assertEquals("res:$limit", sort.first(), id) // yt-dlp's `res` is min(width, height): a soft cap, the best one at or under N first
+            // H.264 comes AFTER the resolution: the owner's "keep resolution" decision. The first RC had it the other way round.
+            assertTrue(sort.indexOf("vcodec:h264") > sort.indexOf("res:$limit"), id)
+            assertEquals(listOf("res:$limit", "vcodec:h264", "acodec:aac", "proto", "ext:mp4:m4a"), sort, id)
+            // https before HLS ahead of the container: a VP9 .webm over https must beat the same VP9 as an HLS .mp4
+            assertTrue(sort.indexOf("proto") < sort.indexOf("ext:mp4:m4a"), id)
         }
         assertEquals(DownloadPresets.mp4Args(720), DownloadPresets.byId("best-720").extraArgs)
         assertEquals(DownloadPresets.mp4Args(1080), DownloadPresets.byId("best-1080").extraArgs)
     }
 
-    @Test fun anMp4PresetMergesIntoAnMp4EvenWhenTheSiteHasNoH264() {
-        // A no-H.264 fallback that is a MERGE (VP9 video + Opus audio, which would otherwise be .mkv) comes out as .mp4. A
-        // single-file fallback in another container (a lone .webm on a rare host) keeps its own: --merge-output-format does not
-        // touch it, and --remux-video mp4 would make the whole download fail when the codecs cannot go into an mp4 (Vorbis),
-        // so it is deliberately absent. Nothing is ever re-encoded.
+    @Test fun anMp4PresetMergesIntoAnMp4EvenWhenTheBestVideoIsVp9OrAv1() {
+        // A VP9 / AV1 video + AAC audio is a MERGE of two streams and comes out as .mp4 (copied, never re-encoded). A single-file
+        // source in another container (a lone muxed .webm on a rare host) keeps its own: --merge-output-format does not touch it,
+        // and --remux-video mp4 would make the whole download fail when the codecs cannot go into an mp4 (Vorbis), so it is
+        // deliberately absent.
         for (id in listOf("best-1080", "best-720")) {
             val args = DownloadPresets.byId(id).extraArgs
             assertEquals("mp4", args[args.indexOf("--merge-output-format") + 1], id)
@@ -106,10 +156,11 @@ class DownloadPresetsTest {
     }
 
     @Test fun theMp4DescriptionsPromiseOnlyWhatThePresetsDo() {
-        // 1080 is an upper bound on the SHORT side (a 720p-only source stays 720p; on a modern Facebook video the only H.264 is its
-        // small sd, while an older one's hd is H.264 720p).
-        assertEquals("H.264 up to 1080p, widely compatible", DownloadPresets.byId("best-1080").desc)
-        assertEquals("Smaller file, good quality", DownloadPresets.byId("best-720").desc)
+        // Short on purpose (a half-width card shows one line). "Sharpest up to 1080p": the cap is a ceiling, not a promise of 1080
+        // lines, and the codec is not promised at all (H.264 only wins a tie).
+        assertEquals("Sharpest up to 1080p", DownloadPresets.byId("best-1080").desc)
+        assertEquals("Up to 720p, smaller file", DownloadPresets.byId("best-720").desc)
+        for (id in listOf("best-1080", "best-720")) assertFalse("H.264" in DownloadPresets.byId(id).desc, id)
     }
 
     // ---- MP3 320: a constant bitrate, not LAME V0 ----

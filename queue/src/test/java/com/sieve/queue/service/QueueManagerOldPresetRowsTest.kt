@@ -20,10 +20,12 @@ import org.junit.Test
 
 /**
  * Download rows saved by v1.0.3 and earlier carry the OLD preset arguments in their stored `args`: a 720p row the
- * `[height<=720]` selector, an MP3 row `--audio-quality 0` (LAME V0), an Opus row a bare `-x`. The 1.0.4 preset fix changes
- * what NEW rows are built with and nothing else: there is no database migration and nothing rewrites a stored row on restore
- * or at spawn, so every old row (restored, resumed or retried) runs exactly as it was saved. The rows here go through the
- * real storage mapping and the real queue, and the port records what yt-dlp would be started with.
+ * `[height<=720]` selector, an MP3 row `--audio-quality 0` (LAME V0), an Opus row a bare `-x`. A row saved by the first 1.0.4
+ * release candidate (419d299) carries its H.264-first MP4 selector and `-S` sort, which the final keep-resolution presets
+ * replaced. The 1.0.4 preset fix changes what NEW rows are built with and nothing else: there is no database migration and
+ * nothing rewrites a stored row on restore or at spawn, so every old row (restored, resumed or retried) runs exactly as it
+ * was saved. The rows here go through the real storage mapping and the real queue, and the port records what yt-dlp would be
+ * started with.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class QueueManagerOldPresetRowsTest {
@@ -33,6 +35,12 @@ class QueueManagerOldPresetRowsTest {
     private val old1080 =
         "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/" +
             "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+
+    /** The first release candidate's MP4 selector (H.264 first, anything last) and sort: replaced by keep-resolution before 1.0.4 shipped. */
+    private val rc1Format =
+        "bv[vcodec~='^(avc|h264)']+ba/b[vcodec~='^(avc|h264)']/" +
+            "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']/b[format_id=sd][ext=mp4]/bv*+ba/b"
+    private fun rc1Sort(shortSide: Int) = "res:$shortSide,vcodec:h264,acodec:aac,ext:mp4:m4a"
 
     /** The `args` column as the 1.0.3 download screen wrote it (`YtdlpArgs.build`: -f, -o, -P, the preset's extras, the toggles, -N). */
     private fun stored(format: String, vararg extras: String) = listOf(
@@ -45,6 +53,8 @@ class QueueManagerOldPresetRowsTest {
         "old-720" to stored(old720),
         "old-mp3" to stored("bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "0"),
         "old-opus" to stored("bestaudio[ext=webm]/bestaudio/best", "-x"),
+        "rc1-1080" to stored(rc1Format, "-S", rc1Sort(1080), "--merge-output-format", "mp4"),
+        "rc1-720" to stored(rc1Format, "-S", rc1Sort(720), "--merge-output-format", "mp4"),
     )
 
     /** What yt-dlp is started with for a stored row: `-c`, the stored args minus their own -P/-o, then the job's work dir and template. */
@@ -93,9 +103,17 @@ class QueueManagerOldPresetRowsTest {
         assertEquals("0", mp3[mp3.indexOf("--audio-quality") + 1])
         val opus = port.started.getValue("old-opus")
         assertFalse("--audio-format" in opus)
+        // The release candidate rows keep THEIR sort (no `proto` key) and selector (a codec-first tier, no size guard).
+        for (cap in listOf(1080, 720)) {
+            val rc1 = port.started.getValue("rc1-$cap")
+            assertTrue(rc1Format in rc1)
+            assertEquals(rc1Sort(cap), rc1[rc1.indexOf("-S") + 1])
+        }
         for ((id, argv) in port.started) {
-            assertFalse(id, "-S" in argv || "--merge-output-format" in argv)
+            // only a release candidate row has a sort and a merge flag: the 1.0.3 rows never get one
+            assertEquals(id, id.startsWith("rc1-"), "-S" in argv || "--merge-output-format" in argv)
             assertFalse(id, "320K" in argv || "128K" in argv || "opus" in argv)
+            assertFalse(id, argv.any { "proto" in it || "[width>" in it })
         }
     }
 

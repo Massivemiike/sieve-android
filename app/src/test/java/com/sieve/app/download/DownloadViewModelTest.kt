@@ -176,13 +176,17 @@ class DownloadViewModelTest {
 
     private val toggles = listOf("--embed-metadata", "--embed-thumbnail", "-N", "4")
     private val spawnTail = listOf("-P", "/work/id", "-o", "%(title).150B [%(id)s].%(ext)s")
-    private val mp4Format = "bv[vcodec~='^(avc|h264)']+ba/b[vcodec~='^(avc|h264)']/" +
-        "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*)(&|\$)']/b[format_id=sd][ext=mp4]/bv*+ba/b"
+    // The 1080p / 720p MP4 selectors: the best resolution within the short-side cap, H.264 only as a tie-break in the -S sort.
+    private val fbHdRule = "b[format_id=hd][ext=mp4][url~='[?&]tag=(hd|dash_h264[a-z0-9_-]*_720p)(&|\$)']"
+    private val mp4Format720 = "$fbHdRule/bv*+ba/b"
+    private val mp4Format1080 =
+        "bv*[width>720][width<=1080][height>1080]+ba/bv*[height>720][height<=1080][width>720]+ba/$fbHdRule/bv*+ba/b"
+    private fun mp4Sort(shortSide: Int) = "res:$shortSide,vcodec:h264,acodec:aac,proto,ext:mp4:m4a"
 
     private val goldenSpawnArgs = mapOf(
         "best-video" to listOf("-c", "-f", "bestvideo*+bestaudio/best") + toggles + spawnTail,
-        "best-1080" to listOf("-c", "-f", mp4Format, "-S", "res:1080,vcodec:h264,acodec:aac,ext:mp4:m4a", "--merge-output-format", "mp4") + toggles + spawnTail,
-        "best-720" to listOf("-c", "-f", mp4Format, "-S", "res:720,vcodec:h264,acodec:aac,ext:mp4:m4a", "--merge-output-format", "mp4") + toggles + spawnTail,
+        "best-1080" to listOf("-c", "-f", mp4Format1080, "-S", mp4Sort(1080), "--merge-output-format", "mp4") + toggles + spawnTail,
+        "best-720" to listOf("-c", "-f", mp4Format720, "-S", mp4Sort(720), "--merge-output-format", "mp4") + toggles + spawnTail,
         "best-4k" to listOf("-c", "-f", "bestvideo[height<=2160]+bestaudio/best") + toggles + spawnTail,
         "audio-best" to listOf("-c", "-f", "bestaudio/best", "-x") + toggles + spawnTail,
         "audio-mp3" to listOf("-c", "-f", "bestaudio/best", "-x", "--audio-format", "mp3", "--audio-quality", "320K") + toggles + spawnTail,
@@ -473,8 +477,8 @@ class DownloadViewModelTest {
         for ((id, limit) in listOf("best-1080" to 1080, "best-720" to 720)) {
             assertEquals(
                 listOf(
-                    "-f", DownloadPresets.MP4_FORMAT, "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
-                    "-S", "res:$limit,vcodec:h264,acodec:aac,ext:mp4:m4a", "--merge-output-format", "mp4",
+                    "-f", if (limit == 1080) mp4Format1080 else mp4Format720, "-o", "%(title).150B [%(id)s].%(ext)s", "-P", "~/Videos/yt-dlp",
+                    "-S", mp4Sort(limit), "--merge-output-format", "mp4",
                     "--embed-metadata", "--embed-thumbnail", "-N", "4",
                 ),
                 argsFor(id), id,
