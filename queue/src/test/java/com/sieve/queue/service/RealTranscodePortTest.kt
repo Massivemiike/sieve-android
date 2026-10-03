@@ -1,5 +1,6 @@
 package com.sieve.queue.service
 
+import com.sieve.transcode.args.ScaleFilter
 import com.sieve.transcode.runner.FfmpegProcess
 import com.sieve.transcode.runner.FfmpegProcessFactory
 import com.sieve.transcode.runner.FfmpegRunner
@@ -7,6 +8,7 @@ import com.sieve.transcode.runner.TranscodeEvent
 import com.sieve.transcode.runner.TranscodeJob
 import com.sieve.transcode.runner.android.SourceVideoInfo
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -21,6 +23,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,12 +71,15 @@ private class WedgedProc(private val deathCode: Int = 137, override val stdout: 
 private class RecordingFactory(private val stdout: List<String> = emptyList(), private val onStart: () -> Unit = {}) : FfmpegProcessFactory {
     /** Keyed by the `-i` input path, so a test can tell which job's process is which. */
     val spawned = ConcurrentHashMap<String, FakeProc>()
+    /** The full argv of each spawn, keyed like [spawned]. */
+    val argv = ConcurrentHashMap<String, List<String>>()
     val starts = java.util.concurrent.atomic.AtomicInteger()
     override fun start(binaryPath: String, args: List<String>): FfmpegProcess {
         onStart()
         starts.incrementAndGet()
         val p = FakeProc(stdout)
         spawned[args[args.indexOf("-i") + 1]] = p
+        argv[args[args.indexOf("-i") + 1]] = args
         return p
     }
 }
@@ -338,5 +344,75 @@ class RealTranscodePortTest {
         awaitSpawned(factory, 1)
         factory.spawned["/a"]!!.exit.complete(0)
         assertNull(run.await().filterIsInstance<TranscodeEvent.Progress>().single().progress.percent)
+    }
+
+    // ── spawn-time scale: rows saved by an older build, and the ladder's view of the probed source ──
+    /** The ffmpeg argv [job] is spawned with when the source probes as [info]. */
+    private suspend fun CoroutineScope.spawnedArgv(job: TranscodeJob, info: SourceVideoInfo?): List<String> {
+        val factory = RecordingFactory()
+        val run = async { port(factory) { info }.run("A", job).toList() }
+        awaitSpawned(factory, 1)
+        factory.spawned[job.inputPath]!!.exit.complete(0)
+        run.await()
+        return factory.argv.getValue(job.inputPath)
+    }
+
+    private fun vfOf(argv: List<String>) = argv[argv.indexOf("-vf") + 1]
+
+    private fun kbpsOf(argv: List<String>) = argv[argv.indexOf("-b:v") + 1]
+
+    private val phoneClip = SourceVideoInfo("video/avc", 320, 240, null, durationSec = 19.0)
+
+    @Test fun `a row saved by an older build is spawned with the never-upscaling filter and its stored args are untouched`() = runTest(timeout = 20.seconds) {
+        val stored = listOf("-c:v", "libx264", "-crf", "22", "-vf", "scale=-2:720", "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", stored, 19.0, false), phoneClip)
+
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertFalse("the old upscaling filter reached ffmpeg: $argv", argv.any { "scale=-2:" in it })
+        assertEquals("the stored args are the persisted bytes", "scale=-2:720", stored[stored.indexOf("-vf") + 1])
+    }
+
+    @Test fun `a row that already carries the new filter is spawned with it as it is`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "libx264", "-crf", "22", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, false), phoneClip)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+    }
+
+    @Test fun `the hardware bitrate follows the probed short side - a small clip is not given the 720p rate`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val small = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), phoneClip)       // stays 320x240
+        assertEquals("897k", kbpsOf(small))
+        assertFalse("-crf" in small || "-preset" in small)
+    }
+
+    @Test fun `a portrait phone clip is on the same hardware tier as a landscape one`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720), "-c:a", "aac")
+        val landscape = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), SourceVideoInfo("video/avc", 1920, 1080))
+        val portrait = spawnedArgv(TranscodeJob("/b", "/work/out.mp4", args, 19.0, true), SourceVideoInfo("video/avc", 1080, 1920))
+        assertEquals("3928k", kbpsOf(landscape))
+        assertEquals("3928k", kbpsOf(portrait)) // the height rule would have read 1920 -> the 1440 tier
+    }
+
+    @Test fun `the probed width matters - a small portrait clip is sized by its width, not by its height`() = runTest(timeout = 20.seconds) {
+        // 272x480 into "1080p" stays 272x480: a 272-class frame (800 kbps floor, CRF 20 -> 1131k), not the 480 height's 2545k
+        val tier1080 = listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080))
+        assertEquals("1131k", kbpsOf(spawnedArgv(TranscodeJob("/a", "/work/out.mp4", tier1080, 19.0, true), SourceVideoInfo("video/avc", 272, 480))))
+        // a preset with no scale (the "Source" ones): 720x1280 is a 720-class frame (3500 * 2^(3/6) = 4949k), not the 1080 tier of its 1280 height
+        val source = listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-c:a", "aac")
+        assertEquals("4949k", kbpsOf(spawnedArgv(TranscodeJob("/b", "/work/out.mp4", source, 19.0, true), SourceVideoInfo("video/avc", 720, 1280))))
+    }
+
+    @Test fun `an older hardware row is repaired first and then sized by what it will really encode`() = runTest(timeout = 20.seconds) {
+        val old = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", "scale=-2:720", "-c:a", "aac")
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", old, 19.0, true), phoneClip)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertEquals("897k", kbpsOf(argv)) // the old filter's 720 would have asked for 3928k
+    }
+
+    @Test fun `an unreadable source still gets the filter and the preset tier's bitrate`() = runTest(timeout = 20.seconds) {
+        val args = listOf("-c:v", "h264_mediacodec", "-crf", "22", "-preset", "medium", "-vf", ScaleFilter.shortSide(720))
+        val argv = spawnedArgv(TranscodeJob("/a", "/work/out.mp4", args, 19.0, true), null)
+        assertEquals(ScaleFilter.shortSide(720), vfOf(argv))
+        assertEquals("3928k", kbpsOf(argv))
     }
 }

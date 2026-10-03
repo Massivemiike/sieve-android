@@ -59,14 +59,16 @@ class RealTranscodePort internal constructor(
             //  - AV1 inputs must hardware-decode (`-c:v av1_mediacodec` before -i) — the bundled ffmpeg
             //    has no working software AV1 decoder, so they otherwise fail with 0 frames encoded.
             //  - MediaCodec encoders ignore -crf/-preset and default to ~200 kbps: the sanitizer strips
-            //    them and injects a height/CRF-derived -b:v.
+            //    them and injects a short-side/CRF-derived -b:v.
             //  - "Normalize audio" appends `aresample=48000` after loudnorm (which upsamples to 192 kHz
             //    internally); restore the source's own sample rate (no ffprobe here — MediaExtractor).
             //  - The source's duration (also from MediaExtractor) is the progress denominator when the
             //    queued spec carries none (rows saved by an older build), so progress is determinate.
             // The probe blocks on file I/O, so it stays off the collector's thread.
             val info = withContext(Dispatchers.IO) { probe(job.inputPath) }
-            val sanitized = com.sieve.transcode.args.MediaCodecSanitizer.sanitize(job.presetArgs, info?.height)
+            // A row saved by 1.0.3 or older carries the old upscaling `scale=-2:H`: repaired here, as the persisted args stay byte-exact.
+            val rescaled = com.sieve.transcode.args.ScaleFilter.upgradeLegacy(job.presetArgs)
+            val sanitized = com.sieve.transcode.args.MediaCodecSanitizer.sanitize(rescaled, info?.height, info?.width)
             val adapted = job.copy(
                 inputArgs = SourceProbe.requiredInputArgs(info),
                 presetArgs = com.sieve.transcode.args.LoudnormRate.restore(sanitized, info?.audioSampleRate),

@@ -3,6 +3,7 @@ package com.sieve.transcode
 import com.sieve.transcode.args.BuilderEncoder
 import com.sieve.transcode.args.FfmpegArgs
 import com.sieve.transcode.args.MediaCodecSanitizer
+import com.sieve.transcode.args.ScaleFilter
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -120,8 +121,78 @@ class MediaCodecSanitizerTest {
         assertEquals(3928, kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-720"), 2160)))
         // 4K → "H.264 · 1080p" (CRF 20): ~8.5 Mbps, not ~28.
         assertEquals(8485, kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-1080"), 2160)))
-        // upscale: a 480p source sent to 1080p gets the 1080p-class bitrate, not the starved 480p one
-        assertEquals(8485, kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-1080"), 480)))
+        // no upscale: a 480p source sent to "H.264 · 1080p" stays 480p, so it is a 480p-class encode (CRF 20),
+        // not the 1080p one (8485) the old upscaling filter made it
+        assertEquals(MediaCodecSanitizer.targetKbps("h264_mediacodec", 480, 20), kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-1080"), 480)))
+        assertEquals(2545, kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-1080"), 480)))
+    }
+
+    // ── ladder = the SHORT side of the frame the encoder really gets (never upscaled, orientation-free) ──
+    private fun ladder(id: String, srcW: Int?, srcH: Int?) = kbpsOf(MediaCodecSanitizer.sanitize(hw(id), srcH, srcW))
+
+    @Test
+    fun `a small source is a small-frame encode - the 320x240 clip is not given the 720p bitrate`() {
+        // "H.264 · 720p" on 320x240 stays 320x240 (short side 240: below the 360 tier -> the 800 kbps floor, CRF 22)
+        assertEquals(MediaCodecSanitizer.targetKbps("h264_mediacodec", 240, 22), ladder("h264-720", 320, 240))
+        assertEquals(897, ladder("h264-720", 320, 240))
+        assertTrue(ladder("h264-720", 320, 240) < MediaCodecSanitizer.targetKbps("h264_mediacodec", 720, 22) / 2)
+        // 272x480 portrait into "H.264 · 1080p": 272 on the short side, not the 1080 tier (8485) and not the 480 height (2545)
+        assertEquals(1131, ladder("h264-1080", 272, 480))
+    }
+
+    @Test
+    fun `a portrait source is on the same tier as the landscape one with the same short side`() {
+        // 1080x1920 into "720p" is 720x1280: the 720 tier, exactly as 1920x1080 into 720p (1280x720) is
+        assertEquals(ladder("h264-720", 1920, 1080), ladder("h264-720", 1080, 1920))
+        assertEquals(3928, ladder("h264-720", 1080, 1920))
+        assertEquals(ladder("h264-1080", 3840, 2160), ladder("h264-1080", 2160, 3840))
+        assertEquals(8485, ladder("h264-1080", 2160, 3840))
+        // by the old height rule 1920 would have been the 1440 tier
+        assertTrue(ladder("h264-720", 1080, 1920) < MediaCodecSanitizer.targetKbps("h264_mediacodec", 1920, 22))
+    }
+
+    @Test
+    fun `the unrotated size a phone clip reports gives the same ladder as the rotated one`() {
+        // MediaExtractor reports a portrait phone clip as 1920x1080 plus a rotation; only the short side matters
+        assertEquals(ladder("h264-1080", 1080, 1920), ladder("h264-1080", 1920, 1080))
+        assertEquals(ladder("h264-source", 1080, 1920), ladder("h264-source", 1920, 1080))
+    }
+
+    @Test
+    fun `a preset with no scale keys the ladder on the source's short side`() {
+        // 720x1280 portrait through "H.264 · Source" (CRF 20): a 720-class frame, not the 1080-tier height of 1280
+        assertEquals(MediaCodecSanitizer.targetKbps("h264_mediacodec", 720, 20), ladder("h264-source", 720, 1280))
+        assertEquals(4949, ladder("h264-source", 720, 1280))
+        assertEquals(8485, ladder("h264-source", 1920, 1080))
+    }
+
+    @Test
+    fun `an unknown or unreadable source falls back to the preset's tier`() {
+        val tier720 = MediaCodecSanitizer.targetKbps("h264_mediacodec", 720, 22)
+        assertEquals(tier720, ladder("h264-720", null, null))
+        assertEquals(tier720, ladder("h264-720", 0, 0))      // an audio-only or unreadable probe
+        assertEquals(tier720, ladder("h264-720", 1920, null)) // a width alone is not a short side
+        assertEquals(MediaCodecSanitizer.targetKbps("h264_mediacodec", 1080, 20), ladder("h264-1080", null, null))
+    }
+
+    @Test
+    fun `the source width is optional - a height alone is taken as a landscape short side`() {
+        assertEquals(3928, kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-720"), 2160)))
+        assertEquals(MediaCodecSanitizer.targetKbps("h264_mediacodec", 240, 22), kbpsOf(MediaCodecSanitizer.sanitize(hw("h264-720"), 240)))
+    }
+
+    @Test
+    fun `hevc keeps its 60 percent of the same short-side tier`() {
+        assertEquals(MediaCodecSanitizer.targetKbps("hevc_mediacodec", 240, 25), ladder("h265-720", 320, 240))
+        assertEquals(MediaCodecSanitizer.targetKbps("hevc_mediacodec", 720, 25), ladder("h265-720", 1080, 1920))
+    }
+
+    @Test
+    fun `a preset's -b -v is still never replaced by the ladder`() {
+        // yt-720 carries its own 5M: it comes out the same whatever the source, a 320x240 clip or an 8K one
+        val small = MediaCodecSanitizer.sanitize(hw("yt-720"), 240, 320)
+        assertEquals("5M", small[small.indexOf("-b:v") + 1])
+        assertEquals(small, MediaCodecSanitizer.sanitize(hw("yt-720"), 4320, 7680))
     }
 
     @Test
@@ -136,8 +207,12 @@ class MediaCodecSanitizerTest {
         fun ladderFor(vf: String, src: Int?) = kbpsOf(
             MediaCodecSanitizer.sanitize(listOf("-c:v", "h264_mediacodec", "-vf", vf), src),
         )
-        // explicit WxH (ig-vert style): height 1920 → the 1440+ bucket; CRF absent → scale 1.0
-        assertEquals(10000, ladderFor("scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2", 480))
+        // explicit WxH (ig-vert style): a 1080x1920 canvas is a 1080-class frame (its short side); CRF absent → scale 1.0
+        assertEquals(6000, ladderFor("scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2", 480))
+        // the short-side filter: its tier capped by the source (here a source above it, then one under it)
+        assertEquals(3500, ladderFor(ScaleFilter.shortSide(720), 2160))
+        assertEquals(1200, ladderFor(ScaleFilter.shortSide(720), 360))
+        assertEquals(3500, ladderFor("fps=30," + ScaleFilter.shortSide(720) + ",subtitles='a,b.srt'", 2160))
         // trailing scale options
         assertEquals(3500, ladderFor("scale=-2:720:flags=lanczos", 2160))
         // scale buried in a chain (burned subtitles are appended after it)

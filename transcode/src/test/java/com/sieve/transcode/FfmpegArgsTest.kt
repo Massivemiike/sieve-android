@@ -7,6 +7,7 @@ import com.sieve.transcode.args.EncoderResolver
 import com.sieve.transcode.args.FfmpegArgs
 import com.sieve.transcode.args.FinalizeOptions
 import com.sieve.transcode.args.LoudnormRate
+import com.sieve.transcode.args.ScaleFilter
 import com.sieve.transcode.catalog.TranscodePresets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -27,7 +28,7 @@ class FfmpegArgsTest {
     @Test fun h264_1080_software() {
         // -pix_fmt yuv420p right after the rate-control/-preset tokens (desktop encoderMap order).
         assertEquals(
-            listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-pix_fmt", "yuv420p", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
             FfmpegArgs.build("h264-1080", SOFTWARE),
         )
@@ -35,7 +36,7 @@ class FfmpegArgsTest {
 
     @Test fun h264_1080_hardware_swapsOnlyTheVideoToken() {
         assertEquals(
-            listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-vf", "scale=-2:1080",
+            listOf("-c:v", "h264_mediacodec", "-crf", "20", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
             FfmpegArgs.build("h264-1080", HARDWARE),
         )
@@ -45,7 +46,7 @@ class FfmpegArgsTest {
         val args = FfmpegArgs.build("h264-4k", SOFTWARE)
         assertEquals(
             listOf("-c:v", "libx264", "-crf", "20", "-preset", "medium", "-maxrate", "35M", "-bufsize", "70M",
-                "-pix_fmt", "yuv420p", "-vf", "scale=-2:2160", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
+                "-pix_fmt", "yuv420p", "-vf", ScaleFilter.shortSide(2160), "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
             args,
         )
         // token-order invariant: -maxrate/-bufsize come before -vf
@@ -55,7 +56,7 @@ class FfmpegArgsTest {
 
     @Test fun hevc_1080_appendsHvc1Tag() {
         assertEquals(
-            listOf("-c:v", "libx265", "-crf", "23", "-preset", "medium", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx265", "-crf", "23", "-preset", "medium", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-tag:v", "hvc1"),
             FfmpegArgs.build("h265-1080", SOFTWARE),
         )
@@ -66,7 +67,7 @@ class FfmpegArgsTest {
         val hw = FfmpegArgs.build("av1-1080", HARDWARE)
         assertEquals(sw, hw) // GPU selection does not touch AV1
         assertEquals(
-            listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libsvtav1", "-crf", "30", "-preset", "6", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "libopus", "-b:a", "128k"),
             sw,
         )
@@ -79,7 +80,7 @@ class FfmpegArgsTest {
             FfmpegArgs.build("vp9-source", SOFTWARE),
         )
         assertEquals(
-            listOf("-c:v", "libvpx-vp9", "-b:v", "5M", "-row-mt", "1", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libvpx-vp9", "-b:v", "5M", "-row-mt", "1", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "libopus", "-b:a", "128k"),
             FfmpegArgs.build("webm-vp9", SOFTWARE),
         )
@@ -131,7 +132,7 @@ class FfmpegArgsTest {
     @Test fun yt1080_useBitrateAndPresetSlow_presetPrecedesVf() {
         val args = FfmpegArgs.build("yt-1080", SOFTWARE)
         assertEquals(
-            listOf("-c:v", "libx264", "-b:v", "12M", "-preset", "slow", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx264", "-b:v", "12M", "-preset", "slow", "-pix_fmt", "yuv420p", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"),
             args,
         )
@@ -236,7 +237,7 @@ class FfmpegArgsTest {
         )
         // no rate-control tokens at all → straight after the codec
         assertEquals(
-            listOf("-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "scale=-2:1080",
+            listOf("-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", ScaleFilter.shortSide(1080),
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"),
             FfmpegArgs.build("apple-iphone", SOFTWARE),
         )
@@ -287,7 +288,7 @@ class FfmpegArgsTest {
 
     @Test fun gif_hasNoCv_whileWebpAnimUsesVcodec() {
         assertEquals(
-            listOf("-vf", "fps=12,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+            listOf("-vf", "fps=12,scale='min(480,iw)':-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
                 "-loop", "0"),
             FfmpegArgs.build("gif", SOFTWARE),
         )
@@ -325,6 +326,68 @@ class FfmpegArgsTest {
             val args = FfmpegArgs.build(preset.id, SOFTWARE)
             assertTrue("preset ${preset.id} produced empty args", args.isNotEmpty())
         }
+    }
+
+    // ── Resolution tiers: the SHORT side, never an upscale ──────────
+    /** Every preset whose number is a resolution tier (the `scale=-2:H` presets of the desktop), with that tier. */
+    private val tierPresets = mapOf(
+        "h264-720" to 720, "h264-1080" to 1080, "h264-1440" to 1440, "h264-4k" to 2160,
+        "h265-720" to 720, "h265-1080" to 1080, "h265-1440" to 1440, "h265-4k" to 2160,
+        "av1-720" to 720, "av1-1080" to 1080, "av1-1440" to 1440, "av1-4k" to 2160,
+        "vp9-720" to 720, "webm-vp9" to 1080, "vp9-1440" to 1440, "vp9-4k" to 2160,
+        "yt-720" to 720, "yt-1080" to 1080, "yt-1440" to 1440, "yt-4k" to 2160,
+        "twitter" to 1080, "apple-iphone" to 1080, "apple-ipad" to 1080,
+        "android-mobile" to 720, "android-tablet" to 1080,
+    )
+
+    private fun vfOf(args: List<String>): String? = args.indexOf("-vf").takeIf { it >= 0 }?.let { args.getOrNull(it + 1) }
+
+    @Test fun everyResolutionTierPresetCarriesItsTiersShortSideFilter() {
+        for ((id, tier) in tierPresets) for (encoder in listOf(SOFTWARE, HARDWARE)) {
+            assertEquals("$id/$encoder", ScaleFilter.shortSide(tier), vfOf(FfmpegArgs.build(id, encoder)))
+        }
+    }
+
+    @Test fun noPresetEnlargesASmallSourceExceptTheFixedCanvasOnes() {
+        val canvases = setOf("ig-vert", "ig-square", "dvd-ntsc", "dvd-pal") // their output size IS the format
+        val seen = sortedSetOf<String>()
+        for (p in TranscodePresets.all) for (encoder in listOf(SOFTWARE, HARDWARE)) {
+            val scale = vfOf(FfmpegArgs.build(p.id, encoder))?.let(::scaleFilterOf) ?: continue
+            if (p.id in canvases) continue
+            seen += p.id
+            // the sources of the owner's phone test (320x240, 272x480) and some smaller / odd-free ones: every one keeps its size
+            for ((w, h) in listOf(320 to 240, 272 to 480, 160 to 90, 90 to 160, 100 to 100)) {
+                assertEquals("${p.id} ($encoder) on ${w}x$h", w to h, ffmpegScale(scale, w, h))
+            }
+        }
+        // the 25 tier presets plus the GIF: a preset that loses its scale, or a new one that brings its own, shows up here
+        assertEquals(tierPresets.keys + "gif", seen)
+    }
+
+    @Test fun aBigSourceIsStillBroughtDownToEachTiersShortSide() {
+        for ((id, tier) in tierPresets) {
+            val scale = scaleFilterOf(vfOf(FfmpegArgs.build(id, SOFTWARE))!!)!!
+            // 8K landscape and portrait: the short side lands on the tier, whatever the orientation
+            val (lw, lh) = ffmpegScale(scale, 7680, 4320)
+            assertEquals("$id landscape", tier, minOf(lw, lh))
+            assertTrue("$id landscape stays landscape", lw > lh)
+            val (pw, ph) = ffmpegScale(scale, 4320, 7680)
+            assertEquals("$id portrait", tier, minOf(pw, ph))
+            assertTrue("$id portrait stays portrait", pw < ph)
+        }
+    }
+
+    @Test fun fixedCanvasPresetsKeepTheirLiteralSize() {
+        for (id in listOf("ig-vert", "ig-square", "dvd-ntsc", "dvd-pal")) {
+            val scale = scaleFilterOf(vfOf(FfmpegArgs.build(id, SOFTWARE))!!)!!
+            assertTrue("$id: $scale", Regex("scale=\\d+:\\d+").containsMatchIn(scale))
+        }
+    }
+
+    @Test fun gifCapsItsWidthAtTheOldFixedWidth() {
+        val scale = scaleFilterOf(vfOf(FfmpegArgs.build("gif", SOFTWARE))!!)!!
+        assertEquals(480 to 270, ffmpegScale(scale, 1920, 1080)) // unchanged for a big source
+        assertEquals(320 to 240, ffmpegScale(scale, 320, 240))   // was 480x360
     }
 
     @Test fun onlyH264HevcAndDeviceFamiliesRespondToHardwareToggle() {

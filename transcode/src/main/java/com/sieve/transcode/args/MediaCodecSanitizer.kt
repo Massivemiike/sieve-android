@@ -14,12 +14,15 @@ package com.sieve.transcode.args
  * `AVCodecContext.bit_rate`), so a preset that carries just those (the 1440p/4K tiers) still needs the
  * injected `-b:v`; its `-maxrate` is honoured as a ceiling on that value.
  *
- * The ladder height is the preset's own `scale=W:H` target when it has a literal one, else the
- * source height — a 4K clip sent to a 720p preset gets the 720p-class bitrate, not the 4K one.
+ * The ladder is keyed on the SHORT side of the frame the encoder will actually receive (a 1280x720 and a
+ * 720x1280 frame cost the same bits, so "720p" is one tier for both orientations): the preset's
+ * [ScaleFilter.shortSide] tier capped by the source's own short side (that filter never upscales, so a 320x240
+ * clip sent to a 720p preset is a 240-class encode), a literal `scale=W:H` target, else the source's short side.
+ * A 4K clip sent to a 720p preset gets the 720p-class bitrate, not the 4K one.
  */
 object MediaCodecSanitizer {
 
-    /** Height → base kbps for an H.264 encode at "CRF 23"-equivalent quality (30fps assumption). */
+    /** Short side → base kbps for an H.264 encode at "CRF 23"-equivalent quality (30fps assumption). */
     private val H264_BASE_KBPS = listOf(
         2160 to 20000, 1440 to 10000, 1080 to 6000, 720 to 3500, 480 to 1800, 360 to 1200,
     )
@@ -27,7 +30,11 @@ object MediaCodecSanitizer {
     private const val CEIL_KBPS = 50000
     private const val DEFAULT_KBPS = 800 // below-360p / unknown-height fallback
 
-    fun sanitize(args: List<String>, sourceHeight: Int?): List<String> {
+    /**
+     * [sourceHeight] / [sourceWidth] are the probed frame size of the source (null or 0 = unknown; rotation does not matter,
+     * only the short side is used). Without [sourceWidth] the source is taken to be landscape, its height its short side.
+     */
+    fun sanitize(args: List<String>, sourceHeight: Int?, sourceWidth: Int? = null): List<String> {
         val encoder = valueAfter(args, "-c:v") ?: return args
         if (!encoder.endsWith("_mediacodec")) return args
 
@@ -36,28 +43,44 @@ object MediaCodecSanitizer {
         out = stripPair(out, "-preset")
 
         if ("-b:v" !in out) {
-            val ladder = targetKbps(encoder, outputHeight(args) ?: sourceHeight, crf)
+            val ladder = targetKbps(encoder, encodedShortSide(args, sourceWidth, sourceHeight), crf)
             val cap = valueAfter(out, "-maxrate")?.let(::parseKbps)
             out = out + listOf("-b:v", "${if (cap != null) minOf(ladder, cap) else ladder}k")
         }
         return out
     }
 
-    /** Base ladder by encoded frame height, scaled by the CRF intent (2^((23-crf)/6)), HEVC at 60% of H.264. */
-    fun targetKbps(encoder: String, height: Int?, crf: Int?): Int {
-        val base = height?.let { h -> H264_BASE_KBPS.firstOrNull { h >= it.first }?.second } ?: DEFAULT_KBPS
+    /** Base ladder by the encoded frame's short side, scaled by the CRF intent (2^((23-crf)/6)), HEVC at 60% of H.264. */
+    fun targetKbps(encoder: String, shortSide: Int?, crf: Int?): Int {
+        val base = shortSide?.let { s -> H264_BASE_KBPS.firstOrNull { s >= it.first }?.second } ?: DEFAULT_KBPS
         val crfScale = if (crf != null) Math.pow(2.0, (23 - crf) / 6.0) else 1.0
         val codecScale = if (encoder.startsWith("hevc")) 0.6 else 1.0
         return (base * crfScale * codecScale).toInt().coerceIn(FLOOR_KBPS, CEIL_KBPS)
     }
 
     /** A literal `scale=W:H` (W may be -1/-2), at a filter boundary; `scale=1280:-2` or `scale=-2:ih/2` don't match. */
-    private val SCALE_HEIGHT = Regex("(?:^|,)scale=[^:,]*:(\\d+)(?=[:,]|$)")
+    private val SCALE_SIZE = Regex("(?:^|,)scale=([^:,]*):(\\d+)(?=[:,]|$)")
 
-    /** Height the encoder receives: the LAST literal `scale=` target in `-vf`, or null when there isn't one. */
-    private fun outputHeight(args: List<String>): Int? {
-        val vf = valueAfter(args, "-vf") ?: return null
-        return SCALE_HEIGHT.findAll(vf).lastOrNull()?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it > 0 }
+    /** The source's short side: the smaller of its two known dimensions; null when the height is unknown (an unknown width = landscape). */
+    private fun sourceShortSide(width: Int?, height: Int?): Int? {
+        val w = width?.takeIf { it > 0 }
+        val h = height?.takeIf { it > 0 } ?: return null
+        return if (w != null) minOf(w, h) else h
+    }
+
+    /**
+     * Short side of the frame the encoder receives, or null when it is unknowable: the [ScaleFilter.shortSide] tier capped by
+     * the source, else the LAST literal `scale=W:H` in `-vf` (its smaller side, a canvas like Instagram's 1080x1920 being a 1080-class
+     * frame; a derived W, `-2`, leaves H), else the source's own short side (no scale: a "source" preset, or a width-driven one).
+     */
+    private fun encodedShortSide(args: List<String>, sourceWidth: Int?, sourceHeight: Int?): Int? {
+        val source = sourceShortSide(sourceWidth, sourceHeight)
+        val vf = valueAfter(args, "-vf") ?: return source
+        ScaleFilter.shortSideTarget(vf)?.let { return ScaleFilter.shortSideAfter(it, source) }
+        val literal = SCALE_SIZE.findAll(vf).lastOrNull() ?: return source
+        val h = literal.groupValues[2].toIntOrNull()?.takeIf { it > 0 } ?: return source
+        val w = literal.groupValues[1].toIntOrNull()?.takeIf { it > 0 }
+        return if (w != null) minOf(w, h) else h
     }
 
     /** An ffmpeg bitrate (`18M`, `2.5M`, `1500k`/`1500K`, or plain bits per second) in kbps; null if unparseable. */
